@@ -45,24 +45,40 @@ Die App lädt pro Übung **`media/<slug>.gif`**. Deine heruntergeladenen GIFs he
 dem Übungsnamen und müssen einmal auf die Slugs umbenannt werden — dafür liegen zwei
 Skripte bereit, sie decken **159 von 161** Übungen ab:
 
-**macOS / Linux**
-
 ```
 cd /pfad/zu/deinen/gifs
-sh /pfad/zu/app/rename-gifs.sh
+python3 /pfad/zu/app/rename-gifs.py
 ```
 
-**Windows (PowerShell)**
+Python liegt auf macOS und Linux bei, unter Windows über python.org. Das Skript
+braucht keine Pakete und verändert deine Originaldateien nicht — es kopiert.
 
-```
-cd C:\pfad\zu\deinen\gifs
-& "C:\pfad\zu\app\rename-gifs.ps1"
-```
+> Die älteren Shell-Varianten (`rename-gifs.sh`, `rename-gifs.ps1`) liegen noch bei,
+> scheitern auf macOS aber an den Umlauten: BSD-`sed` bricht mit
+> *"RE error: illegal byte sequence"* ab. Nimm das Python-Skript.
 
 Danach liegt neben den GIFs ein Ordner `media/` — den ins Repo-Wurzelverzeichnis
 verschieben, direkt neben `index.html`.
 
 ### Wenn die Bilder im Deployment fehlen
+
+Häufigste Ursache: die Dateien liegen zwar in `media/`, aber noch unter ihren
+Originalnamen mit Umlauten. Die App findet sie dann zwar (sie probiert mehrere
+Kodierungen durch), aber nur solange der Name exakt passt — bei Umlauten hängt das
+vom Betriebssystem ab. **Der Umbenennungslauf ist deshalb kein optionaler Komfort,
+sondern der verlässliche Weg.** Danach heissen alle Dateien rein alphanumerisch.
+
+Zweithäufigste Ursache: es sind nicht alle Dateien angekommen. Zählen:
+
+```
+ls media | wc -l          # erwartet: 159
+git ls-files media | wc -l
+```
+
+Weicht die Zahl ab, den Kopiervorgang wiederholen — das Skript meldet am Ende
+"N GIFs nach media/ kopiert (erwartet: 159)" und listet jede Datei ohne Treffer.
+
+### Weitere Prüfschritte
 
 Prüfe zuerst, ob sie überhaupt hochgeladen wurden:
 
@@ -200,7 +216,8 @@ Die Export-Datei ist gleichzeitig dein **Backup**: sie enthält alle Sätze, Stu
 | `sw.js` | Service Worker, Cache-first fuer den Offline-Betrieb |
 | `manifest.webmanifest` | PWA-Manifest (Name, Icons, Vollbild) |
 | `icon-192.png`, `icon-512.png` | App-Icons fuer den Home-Bildschirm |
-| `rename-gifs.sh`, `rename-gifs.ps1` | GIFs einmalig auf die Slugs umbenennen |
+| `rename-gifs.py` | GIFs einmalig auf die Slugs umbenennen (empfohlen) |
+| `rename-gifs.sh`, `rename-gifs.ps1` | ältere Shell-Varianten, auf macOS unzuverlässig |
 | `.github/workflows/deploy.yml` | Automatisches Deployment auf GitHub Pages |
 | `.gitignore` | schliesst `media/` und alle GIFs aus |
 | `.nojekyll` | schaltet die Jekyll-Verarbeitung ab |

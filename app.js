@@ -620,11 +620,15 @@ function schema(e) {
 }
 /* Bildquelle: media/<slug>.gif — fehlt sie, wird der Originaldateiname aus dem
    EISENHORN-Download versucht; erst danach greift das Bewegungsschema. */
+/* Bildquellen in Reihenfolge. Zuerst der umbenannte Slug-Name, danach die
+   Originaldateinamen aus dem EISENHORN-Download — in mehreren Kodierungen, weil
+   die Umlaute je nach System unterschiedlich auf der Platte liegen. Dadurch
+   funktioniert media/ auch OHNE den Lauf von rename-gifs.sh. */
 function mediaSrcs(e) {
   var out = ['media/' + e.slug + '.gif'];
   var orig = (D.GIF || {})[e.slug];
   if (orig) (typeof orig === 'string' ? [orig] : orig).forEach(function (n) {
-    out.push('../uploads/' + encodeURIComponent(n));
+    out.push('media/' + encodeURIComponent(n));
   });
   return out;
 }
