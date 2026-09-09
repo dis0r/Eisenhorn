@@ -1,4 +1,4 @@
-const CACHE = 'eh-trainer-v12';
+const CACHE = 'eh-trainer-v28';
 const SHELL = ['./', 'index.html', 'app.js', 'data.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

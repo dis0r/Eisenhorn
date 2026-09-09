@@ -13,14 +13,27 @@ var KOLBEN = [
 var STUFEN = []; for (var i = 0; i < 23; i++) STUFEN.push(1 + i * 0.5);
 var RLABEL = { Stange: 'Griffstange', Seilzug: 'Seilzug', Ohne: 'Ohne Stange' };
 var RMODES = ['Stange', 'Seilzug', 'Ohne'];
-var MUSKELN = ['Brust', 'Rücken', 'Schultern', 'Arme', 'Beine', 'Bauch', 'Ganzkörper'];
+var MUSKELN = ['Brust', 'Rücken', 'Schultern', 'Arme', 'Beine', 'Bauch'];
+/* Filter-Chips aus den Gruppen bauen, die wirklich vorkommen — sonst laufen
+   Liste und Daten wieder auseinander. */
+var _groups = null;
+function usedGroups() {
+  if (!_groups) {
+    var seen = {};
+    EX.forEach(function (e) { seen[e.m] = 1; });
+    _groups = MUSKELN.filter(function (g) { return seen[g]; })
+      .concat(Object.keys(seen).filter(function (g) { return MUSKELN.indexOf(g) < 0; }).sort());
+  }
+  return _groups;
+}
 
 /* ---------- Speicher ---------- */
 var K = 'eh.v1';
 var db = load();
 function load() {
-  var d = { set: { ds: true, kolben: 1, bw: 85, ruest: 'Stange', rest: 75, reps: 8, hideDS: false },
-            stufen: {}, ruestOv: {}, cfg: {}, log: [], sessions: [] };
+  var d = { set: { ds: true, kolben: 1, bw: 64, ruest: 'Stange', rest: 75, reps: 8, hideDS: false,
+                   alter: 42, sex: 'm', level: 'wieder' },
+            stufen: {}, ruestOv: {}, cfg: {}, notes: {}, log: [], sessions: [] };
   try {
     var raw = localStorage.getItem(K);
     if (raw) {
@@ -30,6 +43,9 @@ function load() {
       for (var k in p) if (k !== 'set') d[k] = p[k];
       if (p.set) for (var s in p.set) if (p.set[s] !== null && p.set[s] !== undefined) d.set[s] = p.set[s];
       for (var g in d.cfg) if (d.cfg[g]) delete d.cfg[g].sets;   // Feld aus einer Vorversion
+      /* Frühere Versionen speicherten sid als Zahl — einmalig auf String ziehen,
+         sonst greifen Aufklappen und Löschen im Verlauf nicht. */
+      d.log.forEach(function (l) { if (l.sid !== null && l.sid !== undefined) l.sid = String(l.sid); });
     }
   } catch (e) {}
   return d;
@@ -38,39 +54,101 @@ function save() { try { localStorage.setItem(K, JSON.stringify(db)); } catch (e)
 
 /* ---------- Übungen ---------- */
 var D = window.EH_DATA;
+/* Zuordnung der EISENHORN-Muskelnamen zu den Gruppen für Torso und Wochenbilanz. */
+var MGROUP = { 'Bizeps': 'Arme', 'Trizeps': 'Arme', 'Unterarm': 'Arme',
+               'Nacken': 'Schultern', 'Po': 'Beine', 'Waden': 'Beine' };
+function groupOf(m) { return MGROUP[m] || m; }
 var EX = D.L.map(function (row) {
-  var name = row[0], slug = row[1], det = D.DETAIL[slug] || null;
-  return { name: name, slug: slug, det: det, x: (D.EXTRA || {})[slug] || null, ds: /^2\d\d-/.test(slug),
-           m: det ? det.m : muskelOf(name), r0: det ? det.r : ruestOf(name, slug) };
+  var name = row[0], slug = row[1];
+  var mk = (D.MUSK || {})[slug] || null;
+  return { name: name, slug: slug, tx: (D.TXT || {})[slug] || null, mk: mk,
+           ds: /^2\d\d-/.test(slug),
+           m: mk ? groupOf(mk[0][0]) : 'Ganzkörper',
+           r0: (D.RUEST || {})[slug] || ruestOf(name, slug) };
 });
 var BY = {}; EX.forEach(function (e) { BY[e.slug] = e; });
 
+/* Rückfall, falls eine Übung ohne RUEST-Eintrag ergänzt wird. */
 function ruestOf(name, slug) {
   var s = (name + ' ' + slug).toLowerCase();
   if (s.indexOf('seilzug') >= 0) return 'Seilzug';
-  if (s.indexOf('griffband') >= 0 || s.indexOf('horn') >= 0 || s.indexOf('körpergewicht') >= 0) return 'Ohne';
-  if (s.indexOf('griffstange') >= 0 || s.indexOf('stange') >= 0) return 'Stange';
-  if (/klimmzug|dips|liegest|plank|mountain|crunch|beinheben|unterarmst|farmer|hüftheben|beckenheben|rotation|schienbein/.test(s)) return 'Ohne';
-  if (/latzug|rudern|bankdr|brustdr|schulterdr|bizepscurl|kreuzheben|kniebeug|beinpresse|wadenheben|trizeps|butterfly|aufrechtes|schulterheben|nackenheben|shrugs|ausfallschritt|beinbeuger/.test(s)) return 'Stange';
+  if (s.indexOf('stange') >= 0) return 'Stange';
   return 'Ohne';
 }
-function muskelOf(name) {
-  var s = name.toLowerCase();
-  if (/schulter|nacken|shrug|seitenheben|facepull|rotator/.test(s)) return 'Schultern';
-  if (/latzug|rudern|klimmzug|kreuzheben|ruderzug|reverse fly/.test(s)) return 'Rücken';
-  if (/brust|bankdr|butterfly|fly|liegest|dips/.test(s)) return 'Brust';
-  if (/bizeps|trizeps|curl|unterarm/.test(s)) return 'Arme';
-  if (/knie|bein|waden|ausfallschritt|hüft|becken|adduktion|abduktion|kickback|laufschritt|schienbein/.test(s)) return 'Beine';
-  if (/crunch|rumpf|plank|twist|bauch|beinheben|unterarmstütz|mountain/.test(s)) return 'Bauch';
-  return 'Ganzkörper';
-}
 function ruestOfEx(e) { return db.ruestOv[e.slug] || e.r0; }
+
+/* Bewegungsrichtung für das Push/Pull-Verhältnis. Der Indikator misst die
+   Balance des OBERKÖRPERS — zu viel Drücken ohne Gegenzug ist am Heimgerät der
+   häufigste Weg in Schulterprobleme. Abgeleitet aus dem primären Muskel der
+   EISENHORN-Daten; Bein-, Rumpf- und Nackenarbeit zählt bewusst nicht mit. */
+var PPMAP = { Brust: 'push', Trizeps: 'push', Schultern: 'push',
+              Rücken: 'pull', Bizeps: 'pull' };
+function pushPull(e) {
+  return (e.mk && PPMAP[e.mk[0][0]]) || null;
+}
+
+/* Regeneration: Stunden seit der letzten Belastung dieser Muskelgruppe. */
+function hoursSince(muskel) {
+  var last = 0;
+  db.log.forEach(function (l) {
+    if (!isSet(l) || l.warm) return;
+    var e = BY[l.slug]; if (!e) return;
+    var hit = e.mk ? e.mk.some(function (r) { return groupOf(r[0]) === muskel && r[1] >= 4; }) : e.m === muskel;
+    if (hit && l.t > last) last = l.t;
+  });
+  return last ? (Date.now() - last) / 36e5 : null;
+}
+function recoveryHint(ids) {
+  var worst = null;
+  ids.forEach(function (slug) {
+    var e = BY[slug]; if (!e) return;
+    var hrs = hoursSince(e.m);
+    if (hrs !== null && hrs < 36 && (!worst || hrs < worst.hrs)) worst = { m: e.m, hrs: hrs };
+  });
+  if (!worst) return null;
+  return worst.m + ' zuletzt vor ' + Math.round(worst.hrs) + ' h — 48 h Pause wäre besser.';
+}
+
+/* Harte Sätze pro Muskelgruppe (Aufwärmsätze zählen nicht mit).
+   Sportwissenschaftlicher Richtwert: 10–20 Arbeitssätze pro Woche. */
+/* Ein Satz zählt für den primär beanspruchten Muskel voll, für unterstützende
+   anteilig nach der EISENHORN-Intensität (2 von 4 = halber Satz). */
+function hardSets(from) {
+  var out = {};
+  db.log.forEach(function (l) {
+    if (!isSet(l) || l.warm || l.t < from) return;
+    var e = BY[l.slug]; if (!e) return;
+    if (e.mk) e.mk.forEach(function (r) {
+      var g = groupOf(r[0]);
+      out[g] = (out[g] || 0) + (r[1] || 4) / 4;
+    });
+    else out[e.m] = (out[e.m] || 0) + 1;
+  });
+  for (var k in out) out[k] = Math.round(out[k] * 10) / 10;
+  return out;
+}
+function pushPullCount(from) {
+  var c = { push: 0, pull: 0 };
+  db.log.forEach(function (l) {
+    if (!isSet(l) || l.warm || l.t < from) return;
+    var e = BY[l.slug]; if (!e) return;
+    var d = pushPull(e); if (d) c[d]++;
+  });
+  return c;
+}
 
 /* Sätze, Wiederholungen und Pausenzeit pro Übung. Ohne eigenen Eintrag gelten
    die Standardwerte aus den Einstellungen. */
 /* Der offene Satz ist eine Liste von Wiederholungs-Eingaben: 4, 6, 8 gehören
    zusammen zu einem Satz. Erst beim Speichern startet die Pause. */
 /* Offener Satz im Übungsdetail — gleiche Struktur wie im Training. */
+/* Eine Sitzungs-ID je Übung und Kalendertag: mehrere im Detail gespeicherte
+   Sätze gehören damit zu einer Einheit — Grundlage für "Letztes Mal" und den
+   Stufenvorschlag. */
+function soloSid(slug) {
+  var d = new Date(); d.setHours(0, 0, 0, 0);
+  return 'd' + d.getTime() + '-' + slug;
+}
 function soloList(slug) {
   if (!st.solo[slug]) {
     var p = lastPerf(slug), last = null;
@@ -94,7 +172,15 @@ function satzBlock(slug, list, n, prefix) {
       '<div class="sbtn sm" data-a="rep:' + i + '|1">+</div>' +
       '<span class="rdel' + (list.length > 3 ? '' : ' off') + '" data-a="repdel:' + i + '">✕</span></div>';
   });
-  return h + '</div><div class="ghost thin" data-a="repadd">+ Wiederholung</div></div>';
+  h += '</div><div class="ghost thin" data-a="repadd">+ Wiederholung</div>';
+  h += '<div class="rirbar"><span>Wie viele hättest du noch geschafft?</span><div class="rirpick">';
+  [0, 1, 2, 3, 4].forEach(function (v) {
+    h += '<div class="rp' + (st.rir === v && !st.warm ? ' on' : '') + '" data-a="rir:' + v + '">' + (v === 4 ? '4+' : v) + '</div>';
+  });
+  h += '</div></div>';
+  h += '<div class="warmrow' + (st.warm ? ' on' : '') + '" data-a="warm"><span class="box"></span>' +
+    'Aufwärmsatz — zählt nicht für Volumen und Rekorde</div>';
+  return h + '</div>';
 }
 
 function curList() {
@@ -138,7 +224,7 @@ function cfgOf(slug) {
 function lastPerf(slug, exceptSid) {
   var sids = [], seen = {};
   db.log.forEach(function (l) {
-    if (l.slug !== slug || !isSet(l)) return;
+    if (l.slug !== slug || !isSet(l) || l.warm) return;
     var id = sidOf(l);
     if (id === exceptSid) return;
     if (!seen[id]) { seen[id] = []; sids.push(id); }
@@ -151,8 +237,99 @@ function lastPerf(slug, exceptSid) {
            total: rows.reduce(function (a, r) { return a + r.reps; }, 0),
            stufe: rows[rows.length - 1].stufe };
 }
+/* Persönlicher Rekord je Übung: der Satz mit dem höchsten Volumen
+   (Startlast × Wiederholungen). Vorbild: Hevy. */
+/* Zwei getrennte Rekorde: die schwerste bewältigte Stufe und der Satz mit dem
+   höchsten Volumen. Sonst schlägt 20 Wdh. auf Stufe 3 jede schwere Leistung. */
+function prOf(slug, exceptT) {
+  var vol = null, load = null;
+  db.log.forEach(function (l) {
+    if (l.slug !== slug || !isSet(l) || l.warm || l.t === exceptT) return;
+    var v = (l.kg || kgStart(l.stufe)) * l.reps;
+    var r = { vol: v, stufe: l.stufe, reps: l.reps, rl: l.rl, t: l.t };
+    if (!vol || v > vol.vol) vol = r;
+    if (!load || l.stufe > load.stufe || (l.stufe === load.stufe && l.reps > load.reps)) load = r;
+  });
+  return vol ? { vol: vol, load: load } : null;
+}
+function prLine(p) {
+  return Math.round(p.vol).toLocaleString('de-DE') + ' kg · Stufe ' + fmt(p.stufe) +
+         ' × ' + p.reps + ' Wdh. · ' + dstr(p.t);
+}
+
+/* ---------- Startstufe aus dem Profil ----------
+   Nur relevant, solange für eine Übung noch nichts protokolliert ist. Sobald
+   ein Satz mit RIR vorliegt, übernimmt die Progressionslogik.
+
+   Last = Körpergewicht × Übungsfaktor × Geschlecht × Alter × Erfahrung.
+   Das ergibt eine grobe 1RM-Schätzung; für Arbeitssätze mit 8–12 Wdh. werden
+   davon 65 % angesetzt und über die Kolbenformel in eine Stufe zurückgerechnet. */
+var EXFAK = { Beine: .9, Po: .8, Waden: .8, Rücken: .5, Brust: .5, Nacken: .5,
+              Schultern: .35, Bauch: .25, Bizeps: .22, Trizeps: .22, Unterarm: .18 };
+var LEVELS = [['neu', 'Untrainiert', .7], ['wieder', 'Wiedereinsteiger', .9],
+              ['geuebt', 'Geübt', 1.1], ['fort', 'Fortgeschritten', 1.3]];
+
+function levelFak() {
+  var l = LEVELS.filter(function (x) { return x[0] === db.set.level; })[0];
+  return l ? l[2] : 1;
+}
+function ageFak() {
+  var a = db.set.alter || 35;
+  return a <= 35 ? 1 : Math.max(.6, 1 - (a - 35) * .01);
+}
+function sexFak(oben) {
+  if (db.set.sex === 'w') return oben ? .6 : .75;
+  if (db.set.sex === 'x') return oben ? .8 : .88;
+  return 1;
+}
+/* Übungen mit fixierter Stufe: Der Vorbereitungstext verlangt einen Blocker
+   oder die höchste Kraftstufe — die Station dient als Anschlag, nicht als Last.
+   Eine kg-Schätzung wäre hier sinnlos und widerspräche der Anleitung. */
+function isFixedStufe(e) {
+  var t = e.tx || {};
+  return /blocker|höchste (kraft)?stufe|stufe 12/i.test(((t.v || '') + ' ' + (t.a || '')));
+}
+function startVorschlag(slug) {
+  var e = BY[slug];
+  if (!e || !e.mk) return null;
+  if (db.log.some(function (l) { return l.slug === slug && isSet(l); })) return null;
+
+  var prim = e.mk[0][0], fak = EXFAK[prim] || .3;
+  var unten = prim === 'Beine' || prim === 'Po' || prim === 'Waden';
+  var einzeln = /einarmig|einbeinig|einarmige|seitlich einarmig/.test(e.name.toLowerCase());
+  var kg = db.set.bw * fak * sexFak(!unten) * ageFak() * levelFak() * (einzeln ? .55 : 1) * .65;
+
+  if (isFixedStufe(e)) {
+    return { fix: true, txt: 'Eigengewichtsübung mit fixierter Stufe — die Vorbereitung gibt die Einstellung vor (siehe Anleitung). Steigerung läuft über Wiederholungen, nicht über die Stufe.' };
+  }
+  var k = cfg(), roh = kg / (mult() * k.f) - 1;
+  var stufe = Math.round(roh * 2) / 2;
+  if (stufe < 1) {
+    return { unter: true, kg: Math.round(kg),
+      txt: 'Geschätzt ' + Math.round(kg) + ' kg — das liegt unter Stufe 1 (' + fmt(kgStart(1)) +
+        ' kg mit ' + setupLabel() + '). Leichteren Kolben verwenden oder Stufe 1 mit mehr Wiederholungen.' };
+  }
+  stufe = Math.min(12, stufe);
+  return { stufe: stufe, kg: Math.round(kg),
+    txt: 'Startvorschlag Stufe ' + fmt(stufe) + ' ≈ ' + kgLabel(stufe) + ' kg. Lieber zu leicht beginnen.' };
+}
+
+/* Progressionsvorschlag aus der Anstrengung (RIR = Reps in Reserve).
+   Bleiben über die Sätze im Schnitt 2+ Wiederholungen übrig, ist die Stufe reif. */
+function suggestion(slug) {
+  var rows = db.log.filter(function (l) { return l.slug === slug && isSet(l) && !l.warm && l.rir !== undefined; });
+  if (rows.length < 2) return null;
+  var lastSid = sidOf(rows[rows.length - 1]);
+  var s = rows.filter(function (l) { return sidOf(l) === lastSid; });
+  if (s.length < 2) return null;
+  var avg = s.reduce(function (a, l) { return a + l.rir; }, 0) / s.length;
+  var n = s[s.length - 1].stufe;
+  if (avg >= 2) return { dir: 1, next: Math.min(12, n + 0.5), txt: 'Ø ' + fmt(Math.round(avg * 10) / 10) + ' Wdh. Reserve — Stufe ' + fmt(Math.min(12, n + 0.5)) + ' probieren.' };
+  if (avg < 0.5) return { dir: -1, next: Math.max(1, n - 0.5), txt: 'Kaum Reserve — Stufe ' + fmt(n) + ' halten oder auf ' + fmt(Math.max(1, n - 0.5)) + ' zurück.' };
+  return { dir: 0, next: n, txt: 'Passende Belastung — Stufe ' + fmt(n) + ' halten.' };
+}
 function perfLine(p) {
-  return p.sets + ' ' + (p.sets === 1 ? 'Satz' : 'Sätze') + ': ' + p.reps.join('  |  ') +
+  return plural(p.sets, 'Satz', 'Sätze') + ': ' + p.reps.join('  |  ') +
          ' · ' + p.total + ' Wdh. · Stufe ' + fmt(p.stufe) + ' · ' + dstr(p.t);
 }
 function setCfg(slug, k, v) {
@@ -194,7 +371,7 @@ function mmss(t) { return Math.floor(t / 60) + ':' + ('0' + (t % 60)).slice(-2);
    Volumen eines Satzes = Startlast × Wiederholungen. */
 /* Gruppierungsschlüssel einer Einheit. Altdaten ohne sid werden stundenweise
    zusammengefasst. */
-function sidOf(l) { return l.sid || ('t' + Math.floor(l.t / 36e5)); }
+function sidOf(l) { return String(l.sid || ('t' + Math.floor(l.t / 36e5))); }
 /* Einträge mit 0 Wiederholungen sind reine Stufen-Marker, kein Satz. */
 function isSet(l) { return l.reps > 0; }
 
@@ -212,8 +389,14 @@ function sessionList() {
     s.rows.forEach(function (l) {
       var e = BY[l.slug]; if (!e) return;
       var v = (l.kg || kgStart(l.stufe)) * l.reps;
-      vol += v;
-      mus[e.m] = (mus[e.m] || 0) + v;
+      if (!l.warm) {
+        vol += v;
+        if (e.mk) e.mk.forEach(function (r) {
+          var g = groupOf(r[0]);
+          mus[g] = (mus[g] || 0) + v * (r[1] || 4) / 4;
+        });
+        else mus[e.m] = (mus[e.m] || 0) + v;
+      }
       (ex[l.slug] = ex[l.slug] || []).push(l);
     });
     var meta = db.sessions.filter(function (x) { return Math.abs(x.t - s.t) < 6e4; })[0];
@@ -229,38 +412,124 @@ function rangeStart(r) {
   else d.setMonth(0, 1);
   return d.getTime();
 }
+/* Ein Helfer für alle Mengenangaben — sonst bleibt beim nächsten Mal wieder
+   ein "1 Sätze" stehen. */
+function plural(n, one, many) { return fmt(n) + ' ' + (n === 1 ? one : many); }
+/* Dauer nur ausgeben, wenn sie gemessen wurde und nicht auf 0 rundet. */
+function durTxt(sec) { return !sec ? '' : sec < 60 ? '<1 Min' : Math.round(sec / 60) + ' Min'; }
+
 function fmtKg(v) {
-  return v >= 1000 ? fmt(Math.round(v / 100) / 10) + ' t' : Math.round(v) + ' kg';
+  return Math.round(v).toLocaleString('de-DE') + ' kg';
 }
 
-/* Schematischer Torso. Jede Muskelgruppe ist eine Fläche, die Deckkraft
-   entspricht ihrem Anteil am Volumen des gewählten Zeitraums. */
-var TORSO = {
-  'Schultern': 'M52 62 q-17 2 -22 16 l-3 15 13 4 8 -22 z M148 62 q17 2 22 16 l3 15 -13 4 -8 -22 z',
-  'Brust':     'M62 66 q38 -9 76 0 l-4 34 q-34 8 -68 0 z',
-  'Arme':      'M27 93 l-6 40 4 32 13 -2 3 -34 5 -34 z M173 93 l6 40 -4 32 -13 -2 -3 -34 -5 -34 z',
-  'Bauch':     'M66 104 q34 7 68 0 l-4 46 q-30 6 -60 0 z',
-  'Rücken':    'M74 40 q26 -7 52 0 l3 20 q-29 -7 -58 0 z',
-  'Beine':     'M70 152 q30 6 60 0 l-6 42 -4 44 -18 1 -4 -45 -4 45 -18 -1 -4 -44 z',
-  'Ganzkörper':'M52 62 q-17 2 -22 16 l-3 15 13 4 8 -22 z M148 62 q17 2 22 16 l3 15 -13 4 -8 -22 z M62 66 q38 -9 76 0 l-4 34 q-34 8 -68 0 z'
-};
-function torso(mus) {
-  var max = 1; for (var k in mus) if (mus[k] > max) max = mus[k];
-  var t = '<svg viewBox="0 0 200 250" preserveAspectRatio="xMidYMid meet">';
-  t += '<g fill="#1B1E21">';
-  for (var g in TORSO) if (g !== 'Ganzkörper') t += '<path d="' + TORSO[g] + '"/>';
-  t += '<circle cx="100" cy="24" r="17"/></g><g fill="#3B6BE8">';
-  for (var m in mus) {
-    if (!TORSO[m]) continue;
-    var o = Math.max(.22, Math.min(1, mus[m] / max));
-    t += '<path d="' + TORSO[m] + '" opacity="' + o.toFixed(2) + '"/>';
+/* Anatomische Körperkarte, Vorder- und Rückansicht. Jeder Muskel der
+   EISENHORN-Systematik ist eine eigene Fläche; die Deckkraft entspricht dem
+   Anteil an der Belastung des gewählten Zeitraums. */
+/* Anatomische Körperkarte. Gezeichnet wird nur die linke Hälfte, die rechte
+   entsteht durch Spiegelung an x = 100 — dadurch bleibt die Figur symmetrisch
+   und jede Muskelfläche ist mit einem Pfad beschrieben. */
+var FIG = {
+  outline: [
+    'M100 52 L92 54 L91 66 C82 69 70 73 63 82 C60 95 61 110 64 124 C67 140 71 152 74 164 C71 176 68 186 67 196 C67 200 68 203 70 206 L100 206 Z',
+    'M97 204 C80 204 71 212 68 228 C64 248 63 268 66 288 C68 296 69 300 70 306 C66 326 66 348 70 368 C71 378 72 384 72 390 C70 396 68 398 74 398 L91 398 C94 396 93 390 92 384 L91 368 C92 348 93 326 93 306 L94 288 C96 262 97 232 97 204 Z',
+    'M62 80 C54 88 50 104 49 122 C48 138 47 150 47 158 C46 176 43 200 40 222 C38 240 35 256 37 266 C39 274 46 275 48 266 C50 256 50 244 52 230 C55 202 58 176 61 152 C63 128 66 100 67 84 Z'
+  ],
+  head: 'M100 6 C89 6 85 16 85 29 C85 42 91 52 100 52 Z',
+  front: {
+    lines: ['M100 52 L100 206', 'M86 138 L100 138', 'M86 152 L100 152', 'M86 166 L100 166',
+            'M70 204 L100 204', 'M71 292 L92 292', 'M52 166 L62 164', 'M84 124 L100 124'],
+    m: {
+      Nacken:    'M91 55 C89 63 87 67 84 69 C77 72 71 76 68 80 C76 76 86 73 92 71 Z',
+      Schultern: 'M65 80 C57 85 52 97 52 112 C52 116 56 118 60 117 C61 104 64 91 70 84 Z',
+      Brust:     'M71 82 C80 79 94 77 99 77 L99 117 C93 122 82 123 74 118 C70 115 68 108 68 98 Z',
+      Bizeps:    'M53 120 C50 130 49 143 49 157 C49 161 54 163 57 161 C58 147 59 133 62 123 Z',
+      Unterarm:  'M47 172 C44 190 41 212 39 232 C38 238 44 240 47 236 C50 217 52 196 55 177 Z',
+      Bauch:     'M85 124 C90 123 96 123 99 123 L99 179 C94 183 88 183 85 179 Z M78 133 C80 131 82 130 83 130 C82 146 82 162 81 175 C78 172 76 169 75 165 Z',
+      Beine:     'M76 213 C71 231 69 253 71 273 C72 278 84 282 88 279 C92 256 94 232 96 214 C89 217 81 217 76 213 Z',
+      Waden:     'M75 312 C72 330 72 350 75 365 C77 367 81 367 82 365 C80 348 80 330 82 313 Z',
+      Po: '', Rücken: '', Trizeps: ''
+    }
+  },
+  back: {
+    lines: ['M100 52 L100 206', 'M70 204 L100 204', 'M74 268 L96 262', 'M71 292 L92 292',
+            'M79 106 L99 100', 'M52 166 L62 164'],
+    m: {
+      Nacken:    'M99 54 C93 58 87 62 83 66 C76 71 71 76 68 81 C71 90 75 99 79 105 C86 102 94 99 99 97 Z',
+      Schultern: 'M65 82 C57 87 52 99 52 114 C52 118 56 120 60 119 C61 106 64 93 70 86 Z',
+      Rücken:    'M99 100 C91 103 83 107 79 111 C75 120 73 130 72 137 C77 146 82 155 86 159 C92 158 96 156 99 154 Z',
+      Trizeps:   'M53 120 C50 131 49 144 49 158 C49 162 54 164 57 162 C58 148 59 134 62 123 Z',
+      Unterarm:  'M47 172 C44 190 41 212 39 232 C38 238 44 240 47 236 C50 217 52 196 55 177 Z',
+      Po:        'M99 182 C90 182 81 185 77 191 C73 197 74 207 79 213 C84 219 93 223 99 221 Z',
+      Beine:     'M77 230 C72 247 70 265 73 283 C74 287 85 290 89 287 C93 266 94 246 96 230 C89 233 82 233 77 230 Z',
+      Waden:     'M70 306 C66 320 65 342 70 360 C73 364 82 364 84 360 C87 342 86 320 84 307 C79 309 74 309 70 306 Z',
+      Brust: '', Bizeps: '', Bauch: ''
+    }
   }
-  return t + '</g></svg>';
+};
+
+function figHalf(view, load, max) {
+  var v = FIG[view], t = '';
+  FIG.outline.forEach(function (p) {
+    t += '<path d="' + p + '" fill="#15181B" stroke="#3A4147" stroke-width="1.4" stroke-linejoin="round"/>';
+  });
+  for (var m in v.m) {
+    if (!v.m[m]) continue;
+    var val = load[m] || 0;
+    var o = val > 0 ? Math.max(.32, Math.min(1, val / max)) : 0;
+    t += '<path d="' + v.m[m] + '" fill="' + (o ? '#3B6BE8' : '#1F2429') + '"' +
+      (o ? ' opacity="' + o.toFixed(2) + '"' : '') + ' stroke="#2A3035" stroke-width=".8"/>';
+  }
+  return t;
+}
+
+function bodyFigure(view, load, max, dx) {
+  var half = figHalf(view, load, max);
+  return '<g transform="translate(' + dx + ',0)">' +
+    '<path d="' + FIG.head + '" fill="#15181B" stroke="#3A4147" stroke-width="1.4"/>' +
+    '<g transform="translate(200,0) scale(-1,1)"><path d="' + FIG.head + '" fill="#15181B" stroke="#3A4147" stroke-width="1.4"/></g>' +
+    half + '<g transform="translate(200,0) scale(-1,1)">' + half + '</g>' +
+    '<g stroke="#2A3035" stroke-width=".9" fill="none">' +
+    FIG[view].lines.map(function (l) { return '<path d="' + l + '"/>'; }).join('') +
+    '<g transform="translate(200,0) scale(-1,1)">' +
+    FIG[view].lines.map(function (l) { return '<path d="' + l + '"/>'; }).join('') + '</g></g>' +
+    '<text x="100" y="415" fill="#5A6064" font-family="ui-monospace,Menlo,monospace" font-size="11" letter-spacing="2.2" text-anchor="middle">' +
+    (view === 'front' ? 'VORNE' : 'HINTEN') + '</text></g>';
+}
+
+/* load: Belastung je EISENHORN-Muskelname (nicht je Gruppe). */
+function torso(load) {
+  var max = 1;
+  for (var k in load) if (load[k] > max) max = load[k];
+  return '<svg viewBox="0 0 420 424" preserveAspectRatio="xMidYMid meet">' +
+    bodyFigure('front', load, max, 0) + bodyFigure('back', load, max, 220) + '</svg>';
+}
+
+/* Belastung je einzelnem Muskel — für die Körperkarte. */
+function muscleLoad(from) {
+  var out = {};
+  db.log.forEach(function (l) {
+    if (!isSet(l) || l.warm || l.t < from) return;
+    var e = BY[l.slug]; if (!e || !e.mk) return;
+    e.mk.forEach(function (r) { out[r[0]] = (out[r[0]] || 0) + (r[1] || 4) / 4; });
+  });
+  return out;
+}
+
+/* Belastung je einzelnem Muskel — für die Körperkarte. */
+function muscleLoad(from) {
+  var out = {};
+  db.log.forEach(function (l) {
+    if (!isSet(l) || l.warm || l.t < from) return;
+    var e = BY[l.slug]; if (!e || !e.mk) return;
+    e.mk.forEach(function (r) { out[r[0]] = (out[r[0]] || 0) + (r[1] || 4) / 4; });
+  });
+  return out;
 }
 
 /* Löschen. Alle Auswertungen leiten sich aus db.log ab — entfernte Sätze
    verschwinden damit automatisch aus Verlauf, Volumen und "Letztes Mal". */
 function delSession(id) {
+  id = String(id);
   var ts = db.log.filter(function (l) { return sidOf(l) === id; }).map(function (l) { return l.t; });
   db.log = db.log.filter(function (l) { return sidOf(l) !== id; });
   if (ts.length) {
@@ -270,11 +539,13 @@ function delSession(id) {
   save();
 }
 function delExercise(id, slug) {
+  id = String(id);
   db.log = db.log.filter(function (l) { return !(sidOf(l) === id && l.slug === slug); });
   if (!db.log.some(function (l) { return sidOf(l) === id; })) delSession(id);
   save();
 }
 function delOneSet(id, slug, t) {
+  id = String(id);
   var hit = false;
   db.log = db.log.filter(function (l) {
     if (!hit && sidOf(l) === id && l.slug === slug && l.t === t) { hit = true; return false; }
@@ -286,7 +557,7 @@ function delOneSet(id, slug, t) {
 
 /* ---------- Laufzeit-Zustand ---------- */
 var st = { tab: 'heute', detail: null, q: '', chip: 'Alle', chipR: 'Alle',
-           wo: null, rest: 0, restTotal: 75, elapsed: 0, toast: null, editR: false, open: {}, restSolo: null, range: 'woche', session: null, ask: null, solo: {} };
+           wo: null, rest: 0, restTotal: 75, elapsed: 0, toast: null, editR: false, open: {}, restSolo: null, range: 'woche', session: null, ask: null, solo: {}, summary: null, rir: 2, warm: false, dtab: 'log' };
 
 function planIds() {
   var r = db.set.ruest;
@@ -320,7 +591,6 @@ var PAT = {
   rumpf:    { dx:  10, dy: -14, lbl: 'halten · einrollen' }
 };
 function patternOf(e) {
-  if (e.x && e.x.p) return e.x.p;
   var s = e.name.toLowerCase();
   if (/rotation|twist|fly|rotator|abduktion|adduktion|seitenheben/.test(s)) return 'rotation';
   if (/latzug|klimmzug|facepull/.test(s)) return 'zug';
@@ -371,11 +641,18 @@ function media(e, h) {
     '<div class="schema">' + schema(e) + '</div>' +
     '<span class="mlabel">Bewegungsschema</span></div>';
 }
-function skalaOf(e) { return (e.x && e.x.sk) ? e.x.sk : [[e.m, 100]]; }
+function skalaOf(e) { return e.mk || [[e.m, 4]]; }
+/* Die EISENHORN-Seite nennt die beanspruchte Muskulatur als geordnete Liste
+   (primär zuerst) — ohne Prozentwerte. Genau so wird sie gezeigt. */
+/* EISENHORN gibt die Beanspruchung in vier Stufen an — genau so wird sie gezeigt. */
 function skalaBars(e) {
   var sk = skalaOf(e), h = '<div class="skala">';
   sk.forEach(function (r) {
-    h += '<div class="srow"><span>' + esc(r[0]) + '</span><i><u style="width:' + r[1] + '%"></u></i><b>' + r[1] + '</b></div>';
+    var lvl = r[1] || 4, pips = '';
+    for (var i = 1; i <= 4; i++) pips += '<i class="pip' + (i <= lvl ? ' on' : '') + '"></i>';
+    h += '<div class="srow"><b class="mname">' + esc(r[0]) + '</b>' +
+      '<span class="pips">' + pips + '</span>' +
+      '<span class="rank">' + lvl + '/4</span></div>';
   });
   return h + '</div>';
 }
@@ -413,7 +690,7 @@ function vHeute() {
 
   h += '<div class="stats">' +
     stat(streak(), 'Tage Serie', 1) +
-    stat((wkVol / 1000).toFixed(1).replace('.', ','), 't Woche') +
+    stat(Math.round(wkVol).toLocaleString('de-DE'), 'kg Woche') +
     stat(wkKcal, 'kcal Woche') + '</div>';
 
   h += '<div class="rowhead"><span>Rüstart heute</span><span class="mono">einmal aufbauen</span></div><div class="seg3">';
@@ -422,6 +699,9 @@ function vHeute() {
     h += '<div class="s3' + (on ? ' on' : '') + '" data-a="ruest:' + r + '"><b>' + RLABEL[r] + '</b><i>' + c + ' Übungen</i></div>';
   });
   h += '</div>';
+
+  var rh = recoveryHint(ids);
+  if (rh) h += '<div class="recov">' + esc(rh) + '</div>';
 
   h += '<div class="card"><div class="cardtop"><span class="dot"></span><span class="tag">MIKE5 · heute</span><span class="mono ml">0 Umbauten</span></div>' +
     '<div class="ctitle">Ganzkörper · ' + RLABEL[db.set.ruest] + '</div>' +
@@ -470,7 +750,7 @@ function vKatalog() {
     h += '<div class="rc' + (st.chipR === c ? ' on' : '') + '" data-a="chipR:' + c + '">' + (c === 'Alle' ? 'Alle Rüstarten' : RLABEL[c]) + '</div>';
   });
   h += '</div><div class="chips">';
-  ['Alle'].concat(MUSKELN).forEach(function (c) {
+  ['Alle'].concat(usedGroups()).forEach(function (c) {
     h += '<div class="chip' + (st.chip === c ? ' on' : '') + '" data-a="chip:' + c + '">' + c + '</div>';
   });
   h += '</div></div><div class="list">';
@@ -478,82 +758,105 @@ function vKatalog() {
     var n = stufeOf(e.slug);
     h += '<div class="erow" data-a="open:' + e.slug + '"><div class="thumb"><span class="scan"></span></div>' +
       '<div class="ebody"><div class="ename">' + esc(e.name) + (e.ds ? ' <span class="dsflag">DS</span>' : '') + '</div>' +
-      '<div class="emeta">' + e.m + ' · ' + RLABEL[ruestOfEx(e)] + (e.det ? '' : ' · auto') + '</div>' +
-      '<div class="mset">' + skalaOf(e).slice(0, 3).map(function (r) { return '<span style="width:' + (7 + 21 * r[1] / 100) + 'px"></span>'; }).join('') + '</div></div>' +
+      '<div class="emeta">' + e.m + ' · ' + RLABEL[ruestOfEx(e)] + '</div>' +
+      '<div class="mset">' + skalaOf(e).slice(0, 4).map(function (r) { return '<span style="width:' + (6 + 6 * (r[1] || 4)) + 'px"></span>'; }).join('') + '</div></div>' +
       '<div class="eright"><b>' + kgLabel(n) + '</b><i>Stufe ' + fmt(n) + '</i></div></div>';
   });
   return h + '</div>';
 }
 
 function vDetail() {
-  var e = BY[st.detail], n = stufeOf(e.slug), d = e.det;
-  var h = '<div class="hero-media">' + media(e, 300) +
+  var ex = BY[st.detail], n = stufeOf(ex.slug), c = cfgOf(ex.slug), tx = ex.tx;
+  var tab = st.dtab || 'log';
+
+  var h = '<div class="hero-media">' + media(ex, 260) +
     '<div class="back" data-a="back">←</div>' +
-    '<div class="hmeta"><div class="hname">' + esc(e.name) + '</div></div></div>';
+    '<div class="hmeta"><div class="hname">' + esc(ex.name) + '</div>' +
+    '<div class="hsub">' + ex.m + ' · ' + RLABEL[ruestOfEx(ex)] + ' · Stufe ' + fmt(n) + ' ≈ ' + kgLabel(n) + ' kg</div></div></div>';
 
-  h += '<div class="block"><div class="blockhead"><span>Stufe → Kilogramm</span><span class="mono">' + setupLabel() + '</span></div>' +
-    '<div class="stepper"><div class="sbtn" data-a="st-:' + e.slug + '">–</div>' +
-    '<div class="sval"><div><b>' + fmt(n) + '</b><i>Stufe</i></div><div class="skg">' + kgLabel(n) + ' kg</div></div>' +
-    '<div class="sbtn" data-a="st+:' + e.slug + '">+</div></div><div class="ladder">';
-  STUFEN.forEach(function (s) {
-    h += '<div class="lb' + (s <= n ? ' on' : '') + '" style="height:' + (34 * s / 12) + 'px" data-a="stx:' + e.slug + '|' + s + '"></div>';
-  });
-  h += '</div><div class="lrange"><span>1 · ' + fmt(kgStart(1)) + ' kg</span><span>' +
-    (n >= 8 ? 'ansteigende Kraftkurve' : 'konstante Last') + '</span><span>12 · ' + fmt(kgEnd(12)) + ' kg</span></div></div>';
+  h += '<div class="dtabs">' +
+    '<div class="dt' + (tab === 'log' ? ' on' : '') + '" data-a="dtab:log">Trainieren</div>' +
+    '<div class="dt' + (tab === 'info' ? ' on' : '') + '" data-a="dtab:info">Anleitung</div></div>';
 
-  h += '<div class="duo"><div class="dcell"><i>Muskelgruppe</i><b>' + e.m + '</b></div>' +
-       '<div class="dcell" data-a="editr"><i>Rüstart' + (st.editR ? ' — wählen' : ' · tippen zum Ändern') + '</i><b>' + RLABEL[ruestOfEx(e)] + '</b></div></div>';
-  if (st.editR) {
-    h += '<div class="seg3 flat">';
-    RMODES.forEach(function (r) { h += '<div class="s3' + (ruestOfEx(e) === r ? ' on' : '') + '" data-a="setr:' + e.slug + '|' + r + '"><b>' + RLABEL[r] + '</b></div>'; });
-    h += '</div>';
-  }
-
-  h += '<div class="block"><div class="blockhead"><span>Beanspruchte Muskulatur</span>' +
-       (e.x && e.x.sk ? '' : '<span class="mono">automatisch abgeleitet</span>') + '</div>' + skalaBars(e) + '</div>';
-
-  if (d) {
-    h += '<div class="steps">';
-    d.s.forEach(function (s, i) { h += '<div class="step"><span>' + ('0' + (i + 1)).slice(-2) + '</span><div><i>' + s[0] + '</i><p>' + esc(s[1]) + '</p></div></div>'; });
-    h += '<div class="step"><span>★</span><div><i>Tipp</i><p>' + esc(d.t) + '</p></div></div></div>';
-    var x = e.x;
-    if (x && x.b) h += sec('beachten', 'Bitte beachten', '<p>' + esc(x.b) + '</p>');
-    if (x && x.dt) h += sec('detail', 'Übung im Detail', '<p>' + esc(x.dt) + '</p>');
-    if (x && x.v && x.v.length) {
-      var vl = x.v.filter(function (s) { return BY[s]; }).map(function (s) {
-        return '<div class="vrow" data-a="open:' + s + '"><span>' + esc(BY[s].name) + '</span><i>' + RLABEL[ruestOfEx(BY[s])] + '</i></div>';
-      }).join('');
-      h += sec('varianten', 'Weitere Varianten · ' + x.v.length, vl);
-    }
-  } else {
-    h += '<div class="hint">Beschreibung noch nicht hinterlegt. <a href="https://eisenhorn.com/de-de/training/kraftuebungen/' + e.slug + '/" target="_blank" rel="noopener">Auf eisenhorn.com öffnen →</a></div>';
-  }
-
-  var hh = histOf(e.slug);
-  if (hh.length) {
-    var mx = Math.max.apply(null, hh.map(function (x) { return x.stufe; }));
-    h += '<div class="block"><div class="blockhead"><span>Dein Verlauf</span></div><div class="chart">';
-    hh.slice(-8).forEach(function (x, i, a) {
-      h += '<div class="cbar"><b>' + fmt(x.stufe) + '</b><div style="height:' + (14 + 44 * x.stufe / mx) + 'px"' + (i === a.length - 1 ? ' class="on"' : '') + '></div><i>' + dstr(x.t) + '</i></div>';
+  if (tab === 'log') {
+    h += '<div class="block"><div class="blockhead"><span>Stufe → Kilogramm</span>' +
+      '<span class="mono">' + setupLabel() + '</span></div>' +
+      '<div class="stepper"><div class="sbtn" data-a="st-:' + ex.slug + '">–</div>' +
+      '<div class="sval"><div><b>' + fmt(n) + '</b><i>Stufe</i></div><div class="skg">' + kgLabel(n) + ' kg</div></div>' +
+      '<div class="sbtn" data-a="st+:' + ex.slug + '">+</div></div><div class="ladder">';
+    STUFEN.forEach(function (sv) {
+      h += '<div class="lb' + (sv <= n ? ' on' : '') + '" style="height:' + (34 * sv / 12) + 'px" data-a="stx:' + ex.slug + '|' + sv + '"></div>';
     });
-    h += '</div></div>';
-  }
+    h += '</div><div class="lrange"><span>1 · ' + fmt(kgStart(1)) + ' kg</span><span>' +
+      (n >= 8 ? 'ansteigende Kraftkurve' : 'konstante Last') + '</span><span>12 · ' + fmt(kgEnd(12)) + ' kg</span></div></div>';
 
-  var c = cfgOf(e.slug);
-  var pv = lastPerf(e.slug);
-  h += '<div class="lastbox wide">' + (pv
+    var pv = lastPerf(ex.slug);
+    h += '<div class="lastbox wide">' + (pv
       ? '<i>Letztes Mal</i><b>' + perfLine(pv) + '</b>'
       : '<i>Letztes Mal</i><b class="dim">noch nichts protokolliert</b>') + '</div>';
 
-  h += '<div class="block"><div class="blockhead"><span>Vorgabe für diese Übung</span>' +
-    '<span class="mono">' + c.reps + ' Wdh. · ' + mmss(c.rest) + '</span></div><div class="cfg">' +
-    stepper(e.slug, 'reps', c.reps, 1) +
-    stepper(e.slug, 'rest', c.rest, 15, ' s') +
-    '</div><div class="ghost" data-a="restnow:' + e.slug + '">Pause starten · ' + mmss(c.rest) + '</div></div>';
+    var sg = suggestion(ex.slug);
+    if (sg) h += '<div class="lastbox wide sug"><i>Vorschlag</i><b>' + esc(sg.txt) + '</b>' +
+      (sg.dir !== 0 ? '<span class="applybtn" data-a="stx:' + ex.slug + '|' + sg.next + '">Stufe ' + fmt(sg.next) + ' übernehmen</span>' : '') + '</div>';
+    var sv = !sg && startVorschlag(ex.slug);
+    if (sv) h += '<div class="lastbox wide start"><i>Noch nie protokolliert</i><b>' + esc(sv.txt) + '</b>' +
+      (sv.stufe ? '<span class="applybtn alt" data-a="stx:' + ex.slug + '|' + sv.stufe + '">Stufe ' + fmt(sv.stufe) + ' übernehmen</span>' : '') + '</div>';
 
-  var sl = soloList(e.slug);
-  h += '<div class="pad">' + satzBlock(e.slug, sl, n, 'Satz eintragen') + '</div>' +
-    '<div class="dactions"><div class="cta" data-a="logone:' + e.slug + '">Satz speichern · ' + sl.join('/') + ' · Stufe ' + fmt(n) + '</div></div>';
+    var note = (db.notes && db.notes[ex.slug]) || '';
+    if (note) h += '<div class="lastbox wide note"><i>Geräte-Notiz</i><b>' + esc(note) + '</b></div>';
+
+    h += '<div class="pad">' + satzBlock(ex.slug, soloList(ex.slug), n, 'Satz eintragen') + '</div>';
+    h += '<div class="pad"><div class="ghost" data-a="restnow:' + ex.slug + '">Pause starten · ' + mmss(c.rest) + '</div></div>';
+
+    var rec = prOf(ex.slug);
+    if (rec) {
+      h += '<div class="prrow"><div class="prcell"><i>Schwerste Stufe</i><b>' + fmt(rec.load.stufe) + '</b><u>' + rec.load.reps + ' Wdh. · ' + dstr(rec.load.t) + '</u></div>' +
+        '<div class="prcell"><i>Bestes Volumen</i><b>' + Math.round(rec.vol.vol).toLocaleString('de-DE') + '</b><u>kg · ' + dstr(rec.vol.t) + '</u></div></div>';
+    }
+    h += '<div class="spacer"></div>';
+  } else {
+    if (tx && (tx.v || tx.a || tx.f)) {
+      h += '<div class="steps">';
+      [['v', 'Vorbereitung'], ['a', 'Ausgangsposition'], ['f', 'Ausführung']].forEach(function (sx, i) {
+        if (!tx[sx[0]]) return;
+        h += '<div class="step"><span>' + ('0' + (i + 1)).slice(-2) + '</span><div><i>' + sx[1] + '</i>' +
+          '<p>' + esc(tx[sx[0]]) + '</p></div></div>';
+      });
+      h += '</div>';
+    }
+    if (tx && tx.t) h += '<div class="tipbox"><i>Tipp</i><p>' + esc(tx.t) + '</p></div>';
+    if (tx && tx.vt) h += '<div class="tipbox alt"><i>Variante</i><p>' + esc(tx.vt) + '</p></div>';
+
+    h += '<div class="block"><div class="blockhead"><span>Beanspruchte Muskulatur</span>' +
+      '<span class="mono">' + (ex.mk ? 'laut eisenhorn.com' : 'eigene Einschätzung') + '</span></div>' +
+      skalaBars(ex) + '</div>';
+
+    h += '<div class="duo"><div class="dcell"><i>Muskelgruppe</i><b>' + ex.m + '</b></div>' +
+      '<div class="dcell" data-a="editr"><i>Rüstart' + (st.editR ? ' — wählen' : ' · tippen zum Ändern') + '</i><b>' + RLABEL[ruestOfEx(ex)] + '</b></div></div>';
+    if (st.editR) {
+      h += '<div class="seg3 flat">';
+      RMODES.forEach(function (r) { h += '<div class="s3' + (ruestOfEx(ex) === r ? ' on' : '') + '" data-a="setr:' + ex.slug + '|' + r + '"><b>' + RLABEL[r] + '</b></div>'; });
+      h += '</div>';
+    }
+
+    h += '<div class="block"><div class="blockhead"><span>Vorgabe</span>' +
+      '<span class="mono">' + c.reps + ' Wdh. · ' + mmss(c.rest) + '</span></div><div class="cfg">' +
+      stepper(ex.slug, 'reps', c.reps, 1) + stepper(ex.slug, 'rest', c.rest, 15, ' s') + '</div></div>';
+
+    var nt = (db.notes && db.notes[ex.slug]) || '';
+    h += '<div class="block"><div class="blockhead"><span>Geräte-Notiz</span>' +
+      '<span class="mono">Lochnummer, Sitzposition</span></div>' +
+      '<textarea class="notein" data-slug="' + ex.slug + '" rows="2" placeholder="z. B. Schlitten Loch 7, Bank 2 Handbreit vor der Säule">' + esc(nt) + '</textarea></div>';
+
+    if (tx && tx.va && tx.va.length) {
+      var vl = tx.va.filter(function (x) { return BY[x[1]]; }).map(function (x) {
+        var b = BY[x[1]];
+        return '<div class="vrow" data-a="open:' + x[1] + '"><span>' + esc(b.name) + '</span><i>' + RLABEL[ruestOfEx(b)] + '</i></div>';
+      });
+      if (vl.length) h += sec('varianten', 'Verwandte Übungen · ' + vl.length, vl.join(''));
+    }
+    h += '<div class="spacer"></div>';
+  }
   return h;
 }
 
@@ -572,33 +875,56 @@ function vVerlauf() {
     .join('') + '</div>';
 
   h += '<div class="stats">' +
-    stat(fmtKg(vol), 'gestemmt', 1) +
+    stat(Math.round(vol).toLocaleString('de-DE'), 'kg gestemmt', 1) +
     stat(list.length, list.length === 1 ? 'Einheit' : 'Einheiten') +
     stat(kc, 'kcal') + '</div>' +
-    '<div class="pad"><div class="mono dim">' + min + ' Min · ' +
-    list.reduce(function (a, s) { return a + s.sets; }, 0) + ' Sätze</div></div>';
+    '<div class="pad"><div class="mono dim">' + (min ? min + ' Min · ' : '') +
+    plural(list.reduce(function (a, s) { return a + s.sets; }, 0), 'Satz', 'Sätze') + '</div></div>';
 
-  var order = Object.keys(mus).sort(function (a, b) { return mus[b] - mus[a]; });
-  h += '<div class="rowhead"><span>Beanspruchte Muskulatur</span></div>';
+  var hs = hardSets(from), pp = pushPullCount(from);
+  var order = Object.keys(mus).sort(function (a, b) { return (hs[b] || 0) - (hs[a] || 0); });
+  h += '<div class="rowhead"><span>Beanspruchte Muskulatur</span>' +
+       (st.range === 'woche' ? '<span class="mono">Ziel 10–20 Sätze</span>' : '') + '</div>';
   if (!order.length) {
     h += '<div class="hint">In diesem Zeitraum noch kein Training protokolliert.</div>';
   } else {
-    h += '<div class="bodyblock"><div class="torso">' + torso(mus) + '</div><div class="mvols">';
+    h += '<div class="bodymap">' + torso(muscleLoad(from)) + '</div>' +
+      '<div class="bodylegend"><span><i></i>nicht trainiert</span>' +
+      '<span><i class="mid"></i>wenig</span><span><i class="on"></i>Schwerpunkt</span></div>';
+    h += '<div class="bodyblock"><div class="mvols">';
     order.forEach(function (m) {
-      h += '<div class="mvol"><span>' + m + '</span><i><u style="width:' +
-        Math.round(100 * mus[m] / mus[order[0]]) + '%"></u></i><b>' + fmtKg(mus[m]) + '</b></div>';
+      var s = hs[m] || 0, pct = st.range === 'woche' ? Math.min(100, 100 * s / 20) : 100 * s / (hs[order[0]] || 1);
+      var lo = st.range === 'woche' && s < 10, hi = st.range === 'woche' && s > 20;
+      h += '<div class="mvol"><span>' + m + '</span><i><u class="' + (lo ? 'low' : hi ? 'high' : '') +
+        '" style="width:' + Math.round(pct) + '%"></u></i>' +
+        '<b>' + plural(s, 'Satz', 'Sätze') + '</b>' +
+        '<em>' + Math.round(mus[m] || 0).toLocaleString('de-DE') + ' kg</em></div>';
     });
     h += '</div></div>';
+    if (st.range === 'woche')
+      h += '<div class="pad"><p class="fine">Balken bis 20 Sätze. Orange = unter 10 (zu wenig Reiz), rot = über 20 (Erholung prüfen).</p></div>';
+
+    var tot = pp.push + pp.pull;
+    if (tot) {
+      var pw = Math.round(100 * pp.push / tot);
+      var warn = pw > 65 ? 'Deutlicher Drück-Überhang — mehr Ziehen (Facepulls, Rudern) schützt die Schulter.'
+               : pw < 35 ? 'Viel Zug, wenig Druck — Balance prüfen.' : 'Ausgewogenes Verhältnis.';
+      h += '<div class="rowhead"><span>Drücken : Ziehen</span><span class="mono">nur Oberkörper</span></div>' +
+        '<div class="ppbox"><div class="ppbar"><u style="width:' + pw + '%"></u></div>' +
+        '<div class="pplab"><b>' + pp.push + ' Drücken</b><b>' + pp.pull + ' Ziehen</b></div>' +
+        '<p class="' + (pw > 65 || pw < 35 ? 'warn' : '') + '">' + warn + '</p></div>';
+    }
   }
 
   h += '<div class="rowhead"><span>Einheiten</span><span class="mono">' + all.length + ' gesamt</span></div>';
   if (!list.length) h += '<div class="hint">Nichts im gewählten Zeitraum.</div>';
   list.forEach(function (s) {
     var top = Object.keys(s.mus).sort(function (a, b) { return s.mus[b] - s.mus[a]; });
-    var open = st.session === s.id;
+    var open = String(st.session) === String(s.id);
     h += '<div class="sess' + (open ? ' open' : '') + '"><div class="sessh" data-a="sess:' + s.id + '">' +
       '<div class="sessd"><b>' + new Date(s.t).toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' }) + '</b>' +
-      '<i>' + s.exCount + ' Übungen · ' + s.sets + ' Sätze' + (s.sec ? ' · ' + Math.round(s.sec / 60) + ' Min' : '') + '</i></div>' +
+      '<i>' + plural(s.exCount, 'Übung', 'Übungen') + ' · ' + plural(s.sets, 'Satz', 'Sätze') +
+      (durTxt(s.sec) ? ' · ' + durTxt(s.sec) : '') + '</i></div>' +
       '<div class="sessv"><b>' + fmtKg(s.vol) + '</b><i>' + top.slice(0, 2).join(' · ') + '</i></div></div>';
     if (open) {
       h += '<div class="sessb"><div class="mvols tight">';
@@ -654,6 +980,47 @@ function vRechner() {
 }
 function rail(t, s, on, a) { return '<div class="rail' + (on ? ' on' : '') + '" data-a="' + a + '"><b>' + t + '</b><i>' + s + '</i></div>'; }
 
+function vProfil() {
+  var s = db.set;
+  var h = '<div class="pad"><h1 class="h1">Profil</h1>' +
+    '<p class="lead">Daraus schätzt die App eine Startstufe für Übungen, die du noch nie protokolliert hast. Danach zählt nur noch, was du tatsächlich schaffst.</p></div>';
+
+  h += '<div class="block edge"><div class="pad2">' +
+    '<div class="rowb"><span>Körpergewicht</span><b>' + s.bw + ' kg</b></div>' +
+    '<input type="range" id="bw" min="45" max="140" value="' + s.bw + '">' +
+    '<div class="rowb" style="margin-top:18px"><span>Alter</span><b>' + (s.alter || 35) + ' Jahre</b></div>' +
+    '<input type="range" id="alter" min="16" max="80" value="' + (s.alter || 35) + '">' +
+    '</div><div class="kols">' +
+    [['m', 'Männlich'], ['w', 'Weiblich'], ['x', 'Keine Angabe']].map(function (x) {
+      return '<div class="kol' + (s.sex === x[0] ? ' on' : '') + '" data-a="sex:' + x[0] + '">' + x[1] + '</div>';
+    }).join('') + '</div></div>';
+
+  h += '<div class="rowhead"><span>Trainingserfahrung</span></div>';
+  h += '<div class="levels">' + LEVELS.map(function (l) {
+    return '<div class="lvl' + (s.level === l[0] ? ' on' : '') + '" data-a="lvl:' + l[0] + '">' +
+      '<b>' + l[1] + '</b><i>Faktor ' + fmt(l[2]) + '</i></div>';
+  }).join('') + '</div>';
+
+  var demo = ['bankdruecken-brustdruecken', 'hackenschmidt-kniebeuge', '201-vorgebeugtes-rudern-mit-griffstange',
+              'schulterdruecken', 'bizepscurls'].filter(function (x) { return BY[x]; });
+  h += '<div class="rowhead"><span>Daraus geschätzte Startstufen</span><span class="mono">' + setupLabel() + '</span></div>';
+  demo.forEach(function (slug) {
+    var e = BY[slug], v = startVorschlag(slug);
+    var done = db.log.some(function (l) { return l.slug === slug && isSet(l); });
+    h += '<div class="erow" data-a="open:' + slug + '"><div class="ebody">' +
+      '<div class="ename">' + esc(e.name) + '</div>' +
+      '<div class="emeta">' + e.mk[0][0] + ' · ' + RLABEL[ruestOfEx(e)] + '</div></div>' +
+      '<div class="eright">' + (done
+        ? '<b class="mut">bereits trainiert</b>'
+        : v && v.stufe ? '<b>Stufe ' + fmt(v.stufe) + '</b><i>' + kgLabel(v.stufe) + ' kg</i>'
+        : v && v.fix ? '<b class="mut">feste Stufe</b>'
+        : '<b class="mut">unter Stufe 1</b>') + '</div></div>';
+  });
+
+  h += '<div class="pad"><p class="fine">Modell: Körpergewicht × Übungsfaktor (Beine 0,9 · Brust und Rücken 0,5 · Schultern 0,35 · Arme 0,22) × Geschlecht × Alter × Erfahrung, davon 65 % als Arbeitslast für 8–12 Wiederholungen. Einarmige Varianten 55 %. Das ist eine Schätzung für den ersten Satz, keine Vorgabe — beginne bewusst zu leicht.</p></div>';
+  return h;
+}
+
 function vWorkout() {
   var w = st.wo, slug = w.ids[w.idx], e = BY[slug], n = stufeOf(slug);
   var done = w.done[w.idx] || [], c = cfgOf(slug), prev = lastPerf(slug, w.sid);
@@ -668,6 +1035,12 @@ function vWorkout() {
   h += '<div class="lastbox">' + (prev
       ? '<i>Letztes Mal</i><b>' + perfLine(prev) + '</b>'
       : '<i>Letztes Mal</i><b class="dim">noch nichts protokolliert</b>') + '</div>';
+  var nt = (db.notes && db.notes[slug]) || '';
+  if (nt) h += '<div class="lastbox note"><i>Geräte-Notiz</i><b>' + esc(nt) + '</b></div>';
+  var rc = prOf(slug);
+  if (rc) h += '<div class="lastbox pr"><i>Rekord · schwerste Stufe</i><b>' + prLine(rc.load) + '</b></div>';
+  var sg2 = suggestion(slug);
+  if (sg2) h += '<div class="lastbox sug"><i>Vorschlag</i><b>' + esc(sg2.txt) + '</b></div>';
 
   h += '<div class="duo tight"><div class="dcell ctr"><i>Stufe</i>' +
     '<div class="mini"><div class="sbtn sm" data-a="st-:' + slug + '">–</div><b>' + fmt(n) + '</b><div class="sbtn sm" data-a="st+:' + slug + '">+</div></div>' +
@@ -675,13 +1048,14 @@ function vWorkout() {
     '<div class="dcell ctr"><i>Pause danach</i><div class="mini">' +
     '<div class="sbtn sm" data-a="cfg:' + slug + '|rest|-15">–</div><b>' + mmss(c.rest) + '</b>' +
     '<div class="sbtn sm" data-a="cfg:' + slug + '|rest|15">+</div></div>' +
-    '<u class="dim">' + done.length + ' ' + (done.length === 1 ? 'Satz' : 'Sätze') + ' erledigt</u></div></div>';
+    '<u class="dim">' + plural(done.length, 'Satz', 'Sätze') + ' erledigt</u></div></div>';
 
   h += '<div class="sets">';
   done.forEach(function (s, i) {
     var rl = s.rl || [s.reps];
-    h += '<div class="set ok"><span class="mono">SATZ ' + (i + 1) + '</span>' +
-      '<b>' + rl.join(' · ') + '<u>' + sum(rl) + ' Wdh. · St. ' + fmt(s.stufe) + '</u></b>' +
+    h += '<div class="set ok' + (s.warm ? ' warm' : '') + '"><span class="mono">' + (s.warm ? 'AUFW.' : 'SATZ ' + (i + 1)) + '</span>' +
+      '<b>' + rl.join(' · ') + '<u>' + sum(rl) + ' Wdh. · St. ' + fmt(s.stufe) +
+      (s.rir !== undefined ? ' · RIR ' + s.rir : '') + '</u></b>' +
       '<span class="tagr" data-a="undoset">↺</span></div>';
   });
   h += '</div>';
@@ -708,15 +1082,52 @@ function render() {
   else if (st.tab === 'heute') h = '<div class="scroll">' + vHeute() + '</div>';
   else if (st.tab === 'katalog') h = '<div class="scroll">' + vKatalog() + '</div>';
   else if (st.tab === 'verlauf') h = '<div class="scroll">' + vVerlauf() + '</div>';
+  else if (st.tab === 'profil') h = '<div class="scroll">' + vProfil() + '</div>';
   else h = '<div class="scroll">' + vRechner() + '</div>';
-  if (!st.wo && st.detail) h = '<div class="scroll">' + h + '</div>' + (st.rest > 0 ? restOverlay(st.restSolo) : '');
+  if (!st.wo && st.detail) {
+    var dx = BY[st.detail], sl = soloList(st.detail);
+    h = '<div class="scroll">' + h + '</div>' +
+      (st.dtab !== 'info'
+        ? '<div class="dockbar"><div class="cta" data-a="logone:' + st.detail + '">Satz speichern · ' +
+          sl.join('/') + ' · Stufe ' + fmt(stufeOf(st.detail)) + '</div></div>'
+        : '') +
+      (st.rest > 0 ? restOverlay(st.restSolo) : '');
+  }
 
   if (tabs) {
-    h += '<nav>' + [['heute', 'Heute'], ['katalog', 'Übungen'], ['verlauf', 'Verlauf'], ['rechner', 'Rechner']]
+    h += '<nav>' + [['heute', 'Heute'], ['katalog', 'Übungen'], ['verlauf', 'Verlauf'], ['rechner', 'Rechner'], ['profil', 'Profil']]
       .map(function (t) { return '<div class="tab' + (st.tab === t[0] ? ' on' : '') + '" data-a="tab:' + t[0] + '"><span></span>' + t[1] + '</div>'; }).join('') + '</nav>';
   }
+  if (st.summary) {
+    var sm = st.summary, mus = {}, mload = {};
+    sm.ids.forEach(function (slug, i) {
+      var e = BY[slug], rows = sm.done[i] || [];
+      if (!e || !rows.length) return;
+      rows.forEach(function (r) {
+        if (r.warm) return;
+        var v = kgStart(r.stufe) * r.reps;
+        if (e.mk) e.mk.forEach(function (x) {
+          mus[groupOf(x[0])] = (mus[groupOf(x[0])] || 0) + v * (x[1] || 4) / 4;
+          mload[x[0]] = (mload[x[0]] || 0) + (x[1] || 4) / 4;
+        });
+        else mus[e.m] = (mus[e.m] || 0) + v;
+      });
+    });
+    var mk = Object.keys(mus).sort(function (a, b) { return mus[b] - mus[a]; });
+    h += '<div class="ask" data-a="sumok"><div class="askbox sum" data-a="noop">' +
+      '<i>Training abgeschlossen</i>' +
+      '<b>' + Math.round(sm.vol).toLocaleString('de-DE') + ' kg gestemmt</b>' +
+      '<div class="sumscroll"><div class="sumgrid"><div><u>' + mmss(sm.sec) + '</u><span>Dauer</span></div>' +
+      '<div><u>' + sm.sets + '</u><span>' + (sm.sets === 1 ? 'Satz' : 'Sätze') + '</span></div>' +
+      '<div><u>' + sm.kcal + '</u><span>kcal</span></div></div>' +
+      '<div class="sumtorso">' + torso(mload) + '</div><div class="mvols">' +
+      mk.map(function (m) { return '<div class="mvol"><span>' + m + '</span><i><u style="width:' +
+        Math.round(100 * mus[m] / mus[mk[0]]) + '%"></u></i><b>' + Math.round(mus[m]).toLocaleString('de-DE') + '</b></div>'; }).join('') +
+      '</div></div>' +
+      '<div class="cta" data-a="sumok">Fertig</div></div></div>';
+  }
   if (st.ask) {
-    h += '<div class="ask"><div class="askbox"><b>' + esc(st.ask.title) + '</b>' +
+    h += '<div class="ask" data-a="askno"><div class="askbox" data-a="noop"><b>' + esc(st.ask.title) + '</b>' +
       '<p>' + esc(st.ask.body) + '</p><div class="askbtns">' +
       '<div class="ghost" data-a="askno">Abbrechen</div>' +
       '<div class="cta warn" data-a="askyes">Löschen</div></div></div></div>';
@@ -726,7 +1137,11 @@ function render() {
   var ae = document.activeElement, wasQ = ae && ae.id === 'q';
   var pos = wasQ ? ae.selectionStart : 0;
   var repI = ae && ae.classList && ae.classList.contains('repin') ? ae.getAttribute('data-i') : null;
+  /* Scrollposition merken — sonst springt die Seite bei jedem +/- nach oben. */
+  var sc = app.querySelector('.scroll, .wbody'), top = sc ? sc.scrollTop : 0;
   app.innerHTML = h;
+  var sc2 = app.querySelector('.scroll, .wbody');
+  if (sc2 && top) sc2.scrollTop = top;
   if (wasQ) { var q = document.getElementById('q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch (e) {} } }
   if (repI !== null) { var r = app.querySelector('.repin[data-i="' + repI + '"]'); if (r) r.focus(); }
 }
@@ -735,20 +1150,22 @@ function render() {
 app.addEventListener('click', function (ev) {
   var el = ev.target.closest('[data-a]'); if (!el) return;
   var p = el.getAttribute('data-a').split(':'), a = p[0], arg = p[1] || '';
+  if (a === 'noop') return;   // Klick in der Box soll nicht den Backdrop auslösen
   var two = arg.split('|');
   if (a === 'tab') { st.tab = arg; st.detail = null; }
-  else if (a === 'open') { st.detail = arg; st.editR = false; st.open = {}; }
+  else if (a === 'open') { st.detail = arg; st.editR = false; st.open = {}; st.warm = false; st.dtab = 'log'; }
+  else if (a === 'dtab') st.dtab = arg;
   else if (a === 'sec') st.open[arg] = !st.open[arg];
   else if (a === 'back') st.detail = null;
   else if (a === 'chip') st.chip = arg;
   else if (a === 'chipR') st.chipR = arg;
   else if (a === 'range') { st.range = arg; st.session = null; }
-  else if (a === 'sess') st.session = st.session === arg ? null : arg;
+  else if (a === 'sess') st.session = String(st.session) === String(arg) ? null : String(arg);
   else if (a === 'asksess') {
-    var s0 = sessionList().filter(function (x) { return x.id === arg; })[0];
+    var s0 = sessionList().filter(function (x) { return String(x.id) === String(arg); })[0];
     st.ask = { kind: 'sess', id: arg, title: 'Einheit löschen?',
-      body: s0 ? new Date(s0.t).toLocaleDateString('de-DE') + ' · ' + s0.exCount + ' Übungen · ' +
-        s0.sets + ' Sätze · ' + fmtKg(s0.vol) + ' werden aus dem Verlauf entfernt.' : '' };
+      body: s0 ? new Date(s0.t).toLocaleDateString('de-DE') + ' · ' + plural(s0.exCount, 'Übung', 'Übungen') +
+        ' · ' + plural(s0.sets, 'Satz', 'Sätze') + ' · ' + fmtKg(s0.vol) + ' werden aus dem Verlauf entfernt.' : '' };
   }
   else if (a === 'askex') {
     var p1 = arg.split('~'), e1 = BY[p1[1]];
@@ -759,6 +1176,7 @@ app.addEventListener('click', function (ev) {
     var p2 = arg.split('~');
     delOneSet(p2[0], p2[1], +p2[2]); toast('Satz gelöscht');
   }
+  else if (a === 'sumok') st.summary = null;
   else if (a === 'askno') st.ask = null;
   else if (a === 'askyes') {
     var q0 = st.ask; st.ask = null;
@@ -771,15 +1189,18 @@ app.addEventListener('click', function (ev) {
   else if (a === 'ruest') { db.set.ruest = arg; save(); }
   else if (a === 'ds') { db.set.ds = arg === '1'; save(); }
   else if (a === 'kol') { db.set.kolben = +arg; save(); }
+  else if (a === 'sex') { db.set.sex = arg; save(); }
+  else if (a === 'lvl') { db.set.level = arg; save(); }
   else if (a === 'st+') setStufe(arg, stufeOf(arg) + 0.5);
   else if (a === 'st-') setStufe(arg, stufeOf(arg) - 0.5);
   else if (a === 'stx') setStufe(two[0], +two[1]);
   else if (a === 'editr') st.editR = !st.editR;
   else if (a === 'setr') { db.ruestOv[two[0]] = two[1]; st.editR = false; save(); }
   else if (a === 'logone') {
-    var rl0 = soloList(arg).slice();
-    logSet(arg, stufeOf(arg), sum(rl0), 'd' + Date.now(), rl0);
-    toast('Satz gespeichert · ' + rl0.join('/') + ' · ' + sum(rl0) + ' Wdh.');
+    var rl0 = soloList(arg).slice(), warmed = st.warm;
+    logSet(arg, stufeOf(arg), sum(rl0), soloSid(arg), rl0);
+    st.warm = false;   // sonst laufen alle weiteren Sätze still als Aufwärmsatz
+    toast((warmed ? 'Aufwärmsatz' : 'Satz') + ' gespeichert · ' + rl0.join('/') + ' · ' + sum(rl0) + ' Wdh.');
   }
   else if (a === 'start') startWo();
   else if (a === 'endwo') { endWo(false); }
@@ -787,6 +1208,8 @@ app.addEventListener('click', function (ev) {
   else if (a === 'restnow') { st.rest = cfgOf(arg).rest; st.restTotal = st.rest; st.restSolo = arg; }
   else if (a === 'rep') setCurAt(+two[0], activeList()[+two[0]] + (+two[1]));
   else if (a === 'repadd') addCur();
+  else if (a === 'rir') { st.rir = +arg; st.warm = false; }
+  else if (a === 'warm') st.warm = !st.warm;
   else if (a === 'repdel') delCur(+arg);
   else if (a === 'nextex') nextEx();
   else if (a === 'undoset') undoSet();
@@ -810,14 +1233,21 @@ app.addEventListener('input', function (ev) {
         var c0 = document.querySelector('.wfoot .cta');
         if (c0) c0.textContent = 'Satz ' + n0 + ' speichern · ' + a.join('/') + ' → Pause';
       } else if (st.detail) {
-        var c1 = document.querySelector('.dactions .cta');
+        var c1 = document.querySelector('.dockbar .cta');
         if (c1) c1.textContent = 'Satz speichern · ' + a.join('/') + ' · Stufe ' + fmt(stufeOf(st.detail));
       }
     }
     return;
   }
+  if (ev.target.classList.contains('notein')) {
+    if (!db.notes) db.notes = {};
+    db.notes[ev.target.getAttribute('data-slug')] = ev.target.value;
+    save();
+    return;
+  }
   if (ev.target.id === 'q') { st.q = ev.target.value; render(); }
   else if (ev.target.id === 'bw') { db.set.bw = +ev.target.value; save(); render(); }
+  else if (ev.target.id === 'alter') { db.set.alter = +ev.target.value; save(); render(); }
   else if (ev.target.id === 'hideds') { db.set.hideDS = ev.target.checked; save(); render(); }
 });
 
@@ -826,12 +1256,13 @@ function toast(m) { st.toast = m; clearTimeout(toast._t); toast._t = setTimeout(
 function logSet(slug, stufe, reps, sid, rl) {
   var r = { slug: slug, stufe: stufe, reps: reps, kg: kgStart(stufe), t: Date.now(), sid: sid || null };
   if (rl) r.rl = rl;
+  if (st.warm) r.warm = 1; else r.rir = st.rir;
   db.log.push(r);
   db.stufen[slug] = stufe; save();
 }
 function startWo() {
   var ids = planIds();
-  st.wo = { idx: 0, cur: {}, done: {}, ids: ids, vol: 0, sid: Date.now() };
+  st.wo = { idx: 0, cur: {}, done: {}, ids: ids, vol: 0, sid: 'w' + Date.now() };
   st.elapsed = 0; st.rest = 0; st.detail = null; wake(true);
 }
 /* Einen Satz protokollieren. Der Satzzähler läuft automatisch hoch, die
@@ -842,10 +1273,15 @@ function logCurrent() {
   var w = st.wo, slug = w.ids[w.idx], n = stufeOf(slug);
   var rl = curList().slice(), total = sum(rl);
   var cur = w.done[w.idx] || (w.done[w.idx] = []);
-  cur.push({ stufe: n, reps: total, rl: rl });
-  w.vol += kgStart(n) * total;
+  cur.push({ stufe: n, reps: total, rl: rl, warm: st.warm ? 1 : 0, rir: st.warm ? undefined : st.rir });
+  if (!st.warm) w.vol += kgStart(n) * total;
   logSet(slug, n, total, w.sid, rl);
   w.cur[w.idx] = rl.slice();
+  if (!st.warm) {
+    var pr = prOf(slug, db.log[db.log.length - 1].t);
+    if (!pr || kgStart(n) * total > pr.vol.vol) toast('Neuer Rekord · ' + Math.round(kgStart(n) * total).toLocaleString('de-DE') + ' kg');
+  }
+  st.warm = false;
   buzz();
   st.rest = cfgOf(slug).rest;
   st.restTotal = st.rest;
@@ -875,7 +1311,9 @@ function endWo(complete) {
     var sets = 0; for (var k in st.wo.done) sets += st.wo.done[k].length;
     if (!sets) { toast('Training ohne Sätze verworfen'); st.wo = null; st.rest = 0; st.elapsed = 0; wake(false); return; }
     db.sessions.push({ t: Date.now(), sec: st.elapsed, kcal: kcal(st.elapsed), sets: sets, vol: Math.round(st.wo.vol), ruest: db.set.ruest });
-    save(); toast('Gespeichert · ' + mmss(st.elapsed) + ' · ' + kcal(st.elapsed) + ' kcal');
+    save();
+    st.summary = { sid: st.wo.sid, sec: st.elapsed, kcal: kcal(st.elapsed), sets: sets,
+                   vol: Math.round(st.wo.vol), ids: st.wo.ids.slice(), done: st.wo.done };
     st.tab = 'verlauf';
   } else toast('Training abgebrochen');
   st.wo = null; st.rest = 0; st.elapsed = 0; wake(false);

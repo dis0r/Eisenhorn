@@ -83,16 +83,22 @@ dann automatisch auf das Bewegungsschema zurück.
 
 ## 3. Übungsdaten
 
-`data.js` enthält alle Übungen der EISENHORN-Übersichtsseite als `[Name, Slug]`.
+`data.js` enthält alle 161 Übungen der EISENHORN-Übersichtsseite, vollständig von
+eisenhorn.com übernommen — die App verlinkt nirgends mehr nach aussen.
 
-* **16 Übungen** haben vollständige Beschreibungen im `DETAIL`-Block.
-* Bei allen anderen leitet die App **Muskelgruppe und Rüstart automatisch aus dem Namen ab**
-  (in der Liste mit `auto` markiert). Im Übungsdetail lässt sich die Rüstart antippen und
-  dauerhaft korrigieren — die Korrektur liegt lokal, `data.js` bleibt unberührt.
-* Eine Übung ergänzen: Zeile in `L` hinzufügen. Beschreibung ergänzen: Eintrag in `DETAIL`
-  nach dem Muster der bestehenden anlegen (`m` Muskelgruppe, `r` Rüstart `Stange|Seilzug|Ohne`,
-  `mu` Muskulatur, `s` Schritte, `t` Tipp).
-* Slugs mit Präfix `2xx-` sind DS-spezifische Übungen. Im Rechner lassen sie sich ausblenden.
+* **`L`** — `[Name, Slug]` je Übung.
+* **`MUSK`** — beanspruchte Muskulatur als `[Muskel, Intensität 1–4]`, primär zuerst.
+  Daraus leitet die App Muskelgruppe, Körperkarte, Wochenbilanz und Volumenverteilung ab.
+  Ein Satz zählt für den primären Muskel voll, für unterstützende anteilig (2 von 4 = halber Satz).
+* **`TXT`** — Vorbereitung (`v`), Ausgangsposition (`a`), Ausführung (`f`), Tipp (`t`),
+  Variantenhinweis (`vt`) und verwandte Übungen (`va`) für alle 161 Übungen.
+* **`GIF`** — Zuordnung Slug → Originaldateiname des heruntergeladenen Bewegtbilds.
+* **Rüstart** (Griffstange / Seilzug / Ohne Stange) wird aus dem Namen abgeleitet und lässt
+  sich im Übungsdetail unter *Anleitung* antippen und dauerhaft korrigieren.
+* Slugs mit Präfix `2xx-` sind DS-spezifische Übungen. Im Rechner ausblendbar.
+
+Beide Quelldateien lagen als CSV vor; die Konvertierung nach `data.js` ist einmalig
+erfolgt. Eine Übung ergänzen heisst: Zeile in `L` plus Einträge in `MUSK` und `TXT`.
 
 ---
 
@@ -188,3 +194,16 @@ Keine Abhaengigkeiten, kein Build-Schritt. `git push` genuegt.
 
 Der Service Worker liefert aus dem Cache. Nach einem Push die Version in `sw.js`
 erhoehen (`const CACHE = 'eh-trainer-v4'`), sonst sieht das iPhone die alte Fassung.
+
+---
+
+## 10. Aufbau des Übungsdetails
+
+Das Detail hat zwei Reiter, weil im Gym anderes zählt als beim Lernen:
+
+* **Trainieren** — Stufenregler mit Live-Umrechnung, „Letztes Mal", Progressionsvorschlag,
+  Geräte-Notiz, der offene Satz mit seinen Wiederholungsfeldern, Pausen-Timer und die
+  beiden Rekorde. Der Speichern-Knopf sitzt fest am unteren Rand und ist nie wegscrollbar.
+* **Anleitung** — Vorbereitung, Ausgangsposition, Ausführung, Tipp und Variantenhinweis im
+  Originaltext, die beanspruchte Muskulatur mit Intensitätsskala, Rüstart, Vorgaben,
+  Geräte-Notiz und die verwandten Übungen zum Durchtippen.
