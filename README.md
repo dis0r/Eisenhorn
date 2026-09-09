@@ -41,9 +41,9 @@ python3 -m http.server 8080
 
 ## 2. Bewegtbilder
 
-Die App lädt pro Übung **`media/<slug>.gif`**. Du hast die GIFs schon heruntergeladen —
-sie heißen nach dem Übungsnamen und müssen einmal auf die Slugs umbenannt werden.
-Dafür liegen zwei Skripte bereit, sie decken **159 von 161** Übungen ab:
+Die App lädt pro Übung **`media/<slug>.gif`**. Deine heruntergeladenen GIFs heissen nach
+dem Übungsnamen und müssen einmal auf die Slugs umbenannt werden — dafür liegen zwei
+Skripte bereit, sie decken **159 von 161** Übungen ab:
 
 **macOS / Linux**
 
@@ -59,25 +59,43 @@ cd C:\pfad\zu\deinen\gifs
 & "C:\pfad\zu\app\rename-gifs.ps1"
 ```
 
-Danach liegt neben den GIFs ein Ordner `media/` — den nach `app/media/` verschieben, fertig.
+Danach liegt neben den GIFs ein Ordner `media/` — den ins Repo-Wurzelverzeichnis
+verschieben, direkt neben `index.html`.
 
-Ohne Datei zeigt die App das animierte **Bewegungsschema** (Schiene, Schlitten, Griffstange,
-das den Weg der Bewegung abfährt). Betroffen sind aktuell nur *Trizepsübung mit langem Griffband*
-und *Abduktion am Seilzug* — für die beiden hast du kein GIF.
+### Wenn die Bilder im Deployment fehlen
 
-Der Zuordnungs-Index steht in `data.js` unter `window.EH_DATA.GIF` (Slug → Originaldateiname).
-Ein GIF nachrüsten: Datei als `media/<slug>.gif` ablegen.
+Prüfe zuerst, ob sie überhaupt hochgeladen wurden:
 
-GIFs sind groß. Für ein Repo lohnt sich das Verkleinern:
+```
+git check-ignore -v media/schulterdruecken.gif   # zeigt eine passende .gitignore-Zeile?
+git ls-files media | head                        # leer = nichts eingecheckt
+```
+
+Frühere Fassungen der `.gitignore` schlossen `media/` und `*.gif` aus; git hat die
+Dateien dann beim `git add` stillschweigend übersprungen. Die aktuelle `.gitignore`
+lässt sie zu. Nachziehen:
+
+```
+git add media
+git commit -m "Bewegtbilder"
+git push
+```
+
+Ohne Datei zeigt die App das animierte **Bewegungsschema** — Schiene, Schlitten und
+Griffstange fahren den Weg der Bewegung ab. Nichts bricht, es sieht nur schematisch aus.
+
+GIFs sind gross. Vor dem Push lohnt das Verkleinern:
 
 ```
 gifsicle --resize-fit 640x640 --optimize=3 --lossy=60 in.gif -o out.gif
 ```
 
-**Rechtlicher Hinweis:** Die Bewegtbilder gehören der EISENHORN AG. Sie in einem privaten
-Repo für den eigenen Gebrauch abzulegen ist etwas anderes, als sie öffentlich zu hosten.
-Wenn das Repo öffentlich sein muss, lass `media/` weg (`.gitignore`) — die App fällt
-dann automatisch auf das Bewegungsschema zurück.
+**Rechtlicher Hinweis:** Die Bewegtbilder gehören der EISENHORN AG. In einem
+öffentlichen Repository — und ein per GitHub Pages erreichbares Repo ist in der
+Regel öffentlich — hostest du damit fremdes Material sichtbar im Netz. Für den rein
+privaten Gebrauch ist das etwas anderes als eine Veröffentlichung. Wer sichergehen
+will: `media/` und `*.gif` in der `.gitignore` wieder aktivieren und mit dem
+Bewegungsschema arbeiten, oder bei EISENHORN eine Freigabe erfragen.
 
 ---
 
