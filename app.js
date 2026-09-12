@@ -27,8 +27,66 @@ function usedGroups() {
   return _groups;
 }
 
-/* ---------- Speicher ---------- */
+/* ---------- Speicher ----------
+   Mehrere Personen trainieren am selben Gerät. Jedes Profil hat einen eigenen
+   Speicherplatz mit Einstellungen, Stufen und Verlauf; der Index merkt sich,
+   wer gerade aktiv ist. Ein vorhandener Altbestand wandert ins erste Profil. */
 var K = 'eh.v1';
+var PK = 'eh.profiles';
+function profKey(id) { return 'eh.p.' + id; }
+var prof = loadProfiles();
+function loadProfiles() {
+  var p = null;
+  try { p = JSON.parse(localStorage.getItem(PK) || 'null'); } catch (e) {}
+  if (!p || !p.list || !p.list.length) {
+    var id = 'p' + Date.now();
+    p = { list: [{ id: id, name: 'Ich' }], cur: id };
+    try {
+      var old = localStorage.getItem(K);
+      if (old) localStorage.setItem(profKey(id), old);
+    } catch (e) {}
+    try { localStorage.setItem(PK, JSON.stringify(p)); } catch (e) {}
+  }
+  if (!p.list.some(function (x) { return x.id === p.cur; })) p.cur = p.list[0].id;
+  return p;
+}
+function saveProfiles() { try { localStorage.setItem(PK, JSON.stringify(prof)); } catch (e) {} }
+function curProf() {
+  return prof.list.filter(function (x) { return x.id === prof.cur; })[0] || prof.list[0];
+}
+/* Kurzstatistik eines fremden Profils, ohne es zu laden. */
+function profStat(id) {
+  if (id === prof.cur) return { sess: (db.sessions || []).length, sets: (db.log || []).filter(isSet).length };
+  try {
+    var raw = localStorage.getItem(profKey(id));
+    if (!raw) return { sess: 0, sets: 0 };
+    var d = JSON.parse(raw);
+    return { sess: (d.sessions || []).length, sets: (d.log || []).filter(function (l) { return l && l.reps; }).length };
+  } catch (e) { return { sess: 0, sets: 0 }; }
+}
+function switchProfile(id) {
+  if (id === prof.cur) return;
+  save();
+  prof.cur = id; saveProfiles();
+  db = load();
+  st.detail = null; st.summary = null; st.rest = 0; st.restSolo = null;
+  st.session = null; st.open = {}; st.solo = {}; st.mix = 0; st.pname = '';
+  applyLook();
+}
+function addProfile(name) {
+  var id = 'p' + Date.now();
+  prof.list.push({ id: id, name: name });
+  saveProfiles();
+  switchProfile(id);
+}
+function delProfile(id) {
+  if (prof.list.length < 2) return;
+  prof.list = prof.list.filter(function (x) { return x.id !== id; });
+  try { localStorage.removeItem(profKey(id)); } catch (e) {}
+  if (prof.cur === id) { prof.cur = prof.list[0].id; db = load(); st.mix = 0; }
+  saveProfiles();
+  applyLook();
+}
 var db = load();
 function load() {
   var d = { set: { ds: true, kolben: 1, bw: 64, ruest: 'Stange', rest: 75, reps: 10, hideDS: false, sound: true,
@@ -36,7 +94,7 @@ function load() {
                    alter: 42, sex: 'm', level: 'wieder' },
             ver: 4, snotes: {}, stufen: {}, ruestOv: {}, eigenOv: {}, richtOv: {}, cfg: {}, notes: {}, log: [], sessions: [] };
   try {
-    var raw = localStorage.getItem(K);
+    var raw = localStorage.getItem(profKey(prof.cur));
     if (raw) {
       var p = JSON.parse(raw);
       /* Einstellungen key-für-key mergen, damit später ergänzte Vorgaben
@@ -82,7 +140,7 @@ function load() {
   } catch (e) {}
   return d;
 }
-function save() { try { localStorage.setItem(K, JSON.stringify(db)); } catch (e) {} }
+function save() { try { localStorage.setItem(profKey(prof.cur), JSON.stringify(db)); } catch (e) {} }
 
 /* ---------- Übungen ---------- */
 var D = window.EH_DATA;
@@ -416,8 +474,15 @@ function levelFak() {
   var l = LEVELS.filter(function (x) { return x[0] === db.set.level; })[0];
   return l ? l[2] : 1;
 }
+/* Kinder und Jugendliche: Krafttraining ist ab dem Grundschulalter unbedenklich,
+   solange die Last leicht bleibt und die Ausführung führt. Vor der Pubertät
+   wächst Kraft über Ansteuerung, nicht über Muskelquerschnitt — schwere Stufen
+   bringen dort nichts und belasten Wachstumsfugen unnötig. */
+function isKid() { return (db.set.alter || 35) < 14; }
+function isTeen() { var a = db.set.alter || 35; return a >= 14 && a < 18; }
 function ageFak() {
   var a = db.set.alter || 35;
+  if (a < 18) return Math.max(.4, .45 + (a - 6) * .046);
   return a <= 35 ? 1 : Math.max(.6, 1 - (a - 35) * .01);
 }
 function sexFak(oben) {
@@ -456,10 +521,11 @@ function setVol(l) {
 }
 /* Lastangabe für Listen und Kopfzeilen. */
 function loadLabel(e, n) { return isEigen(e) ? 'Eigengewicht' : kgLabel(n) + ' kg'; }
-function startVorschlag(slug) {
+/* Reine Schätzung aus dem Profil, unabhängig davon, ob die Übung schon
+   protokolliert wurde — wird zum Deckeln geerbter Stufen gebraucht. */
+function schaetzung(slug) {
   var e = BY[slug];
   if (!e || !e.mk) return null;
-  if (db.log.some(function (l) { return l.slug === slug && isSet(l); })) return null;
 
   var prim = e.mk[0][0], fak = EXFAK[prim] || .3;
   var unten = prim === 'Beine' || prim === 'Po' || prim === 'Waden';
@@ -477,11 +543,22 @@ function startVorschlag(slug) {
   if (stufe < 1) {
     return { unter: true, kg: Math.round(kg),
       txt: 'Geschätzt ' + Math.round(kg) + ' kg — das liegt unter Stufe 1 (' + fmt(kgStart(1)) +
-        ' kg mit ' + setupLabel() + '). Leichteren Kolben verwenden oder Stufe 1 mit mehr Wiederholungen.' };
+        ' kg mit ' + setupLabel() + '). ' + (isKid()
+          ? (db.set.ds === false && db.set.kolben === 0
+              ? 'Stufe 1 mit 12–15 sauberen Wiederholungen — oder die Übung ganz ohne Gerät üben.'
+              : 'Für Kinder: Einzelschiene und Kolben 12 einstellen, dann Stufe 1 mit 12–15 sauberen Wiederholungen — oder die Übung ganz ohne Gerät üben.')
+          : 'Leichteren Kolben verwenden oder Stufe 1 mit mehr Wiederholungen.') };
   }
   stufe = Math.min(12, stufe);
   return { stufe: stufe, kg: Math.round(kg),
-    txt: 'Startvorschlag Stufe ' + fmt(stufe) + ' ≈ ' + kgLabel(stufe) + ' kg. Lieber zu leicht beginnen.' };
+    txt: 'Startvorschlag Stufe ' + fmt(stufe) + ' ≈ ' + kgLabel(stufe) + ' kg. ' +
+      (isKid() ? 'Für Kinder bewusst niedrig — 12–15 Wiederholungen, Technik geht vor Last.' : 'Lieber zu leicht beginnen.') };
+}
+/* Derselbe Wert, aber nur solange die Übung noch keinen eigenen Verlauf hat —
+   danach zählt, was tatsächlich geschafft wurde. */
+function startVorschlag(slug) {
+  if (db.log.some(function (l) { return l.slug === slug && isSet(l); })) return null;
+  return schaetzung(slug);
 }
 
 /* ---------- Wiederholungsfenster ----------
@@ -590,7 +667,15 @@ function kgEnd(n) { var k = cfg(); return n < 8 ? kgStart(n) : r2(mult() * (k.f 
 function kgLabel(n) { var a = kgStart(n), b = kgEnd(n); return b > a ? fmt(a) + '–' + fmt(b) : fmt(a); }
 function r2(x) { return Math.round(x * 100) / 100; }
 function fmt(n) { return String(n).replace('.', ','); }
-function stufeOf(slug) { return db.stufen[slug] === undefined ? 5 : db.stufen[slug]; }
+/* Ohne eigenen Verlauf gilt die Schätzung aus dem Profil — sonst startet ein
+   Kind mit derselben Vorgabe wie ein Erwachsener. */
+function stufeOf(slug) {
+  if (db.stufen[slug] !== undefined) return db.stufen[slug];
+  var v = schaetzung(slug);
+  if (v && v.stufe) return v.stufe;
+  if (v && v.unter) return 1;
+  return 5;
+}
 function setStufe(slug, n) { db.stufen[slug] = Math.max(1, Math.min(12, Math.round(n * 2) / 2)); save(); }
 
 /* ---------- Verlauf ---------- */
@@ -819,7 +904,7 @@ function delOneSet(id, slug, t) {
 
 /* ---------- Laufzeit-Zustand ---------- */
 var st = { tab: 'heute', detail: null, q: '', chip: 'Alle', chipR: 'Alle',
-           wo: null, rest: 0, restTotal: 75, elapsed: 0, toast: null, editR: false, open: {}, restSolo: null, range: 'woche', session: null, ask: null, solo: {}, summary: null, rir: 2, warm: false, dtab: 'log' };
+           wo: null, rest: 0, restTotal: 75, elapsed: 0, toast: null, editR: false, open: {}, restSolo: null, range: 'woche', session: null, ask: null, solo: {}, summary: null, rir: 2, warm: false, dtab: 'log', mix: 0, pname: '' };
 
 function planIds() {
   var r = db.set.ruest, f = curFocus();
@@ -829,19 +914,28 @@ function planIds() {
   var fresh = function (a, b) { return hoursSinceEx(b.slug) - hoursSinceEx(a.slug); };
   var main = pool.filter(function (e) { return ruestOfEx(e) === r; }).sort(fresh);
   var free = r === 'Ohne' ? [] : pool.filter(function (e) { return ruestOfEx(e) === 'Ohne'; }).sort(fresh);
-  var pick = [], seen = {};
+  var pick = [], seen = {}, mix = st.mix || 0;
+  /* Beim Mischen rückt die Auswahl innerhalb jeder Gruppe weiter — gleicher
+     Aufbau, gleiche Reihenfolge, andere Übungen. */
+  var nth = function (arr, k) { return arr.length ? arr[(k + arr.length) % arr.length] : null; };
   var groups = (f.g && f.g.length ? f.g.slice() : ['Beine', 'Brust', 'Rücken', 'Schultern', 'Bauch', 'Arme']).concat(['Ganzkörper']);
   /* Zwei Runden über die Gruppen: erst je eine Übung, dann auffüllen —
      bei einem engen Fokus (eine Gruppe) landen so mehrere Übungen daraus. */
   [0, 1].forEach(function () {
     groups.forEach(function (g) {
       if (pick.length >= 5) return;
-      var c = main.filter(function (e) { return e.m === g && !seen[e.slug]; })[0] ||
-              free.filter(function (e) { return e.m === g && !seen[e.slug]; })[0];
+      var cand = main.filter(function (e) { return e.m === g && !seen[e.slug]; });
+      if (!cand.length) cand = free.filter(function (e) { return e.m === g && !seen[e.slug]; });
+      var c = nth(cand, mix);
       if (c) { pick.push(c.slug); seen[c.slug] = 1; }
     });
   });
-  main.concat(free).forEach(function (e) { if (pick.length < 5 && !seen[e.slug]) { pick.push(e.slug); seen[e.slug] = 1; } });
+  var restp = main.concat(free).filter(function (e) { return !seen[e.slug]; });
+  while (pick.length < 5 && restp.length) {
+    var rc = nth(restp, mix + pick.length);
+    restp = restp.filter(function (e) { return e.slug !== rc.slug; });
+    pick.push(rc.slug); seen[rc.slug] = 1;
+  }
   return sortByRicht(pick);
 }
 
@@ -887,6 +981,9 @@ function warmPlan(slug) {
   if (rows.length) return null;                 // schon dran gewesen
   if (isEigen(e)) return { eigen: true, txt: 'Erst zwei leichte Durchgänge mit halber Wiederholungszahl und ruhigem Tempo — dann der erste Arbeitsdurchgang.' };
   var n = stufeOf(slug);
+  /* Auf den untersten Stufen gibt es nichts abzustufen — dann wärmt man
+     ohne Last auf, nicht mit einer rechnerisch gleichen Stufe. */
+  if (n <= 1.5) return { eigen: true, txt: 'Zwei lockere Durchgänge auf Stufe ' + fmt(n) + ' mit halber Wiederholungszahl und ruhigem Tempo — dann der erste Arbeitsdurchgang.' };
   var a = Math.max(1, Math.round(n * 0.5 * 2) / 2), b = Math.max(1, Math.round(n * 0.7 * 2) / 2);
   if (b >= n) b = Math.max(1, n - 0.5);
   if (a >= b) a = Math.max(1, b - 0.5);
@@ -1110,7 +1207,9 @@ function vHeute() {
   var wkVol = wk.reduce(function (a, s) { return a + (s.vol || 0); }, 0);
   var h = '<div class="pad"><div class="eyebrow">' + ['Sonntag','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag'][today.getDay()] +
     ' · ' + today.getDate() + '. ' + ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'][today.getMonth()] +
-    '</div><h1 class="hero">Gestärkt<br>ins Leben</h1></div>';
+    '</div><h1 class="hero">Gestärkt<br>ins Leben</h1>' +
+    (prof.list.length > 1 ? '<div class="whois" data-a="tab:profil">Training für <b>' + esc(curProf().name) + '</b></div>' : '') +
+    '</div>';
 
   h += '<div class="stats">' +
     stat(streak(), 'Tage Serie', 1) +
@@ -1125,6 +1224,7 @@ function vHeute() {
   h += '<div class="rowhead"><span>Fokus heute</span><span class="mono">' + curFocus().lbl + '</span></div><div class="rfilter wrap">';
   focusList().forEach(function (f) {
     var cnt = EX.filter(function (e) { return dsOk(e) && fitsFocus(e, f); }).length;
+    if (!cnt) return;   // Fokus ohne passende Übungen führt in einen leeren Plan
     h += '<div class="rc' + ((db.set.focus || 'ganz') === f.id ? ' on' : '') + '" data-a="focus:' + f.id + '">' + f.lbl + ' <em>' + cnt + '</em></div>';
   });
   h += '</div>';
@@ -1147,6 +1247,13 @@ function vHeute() {
   var dl = deloadHint();
   if (dl) h += '<div class="recov deload"><b>Entlastungswoche fällig</b> ' + esc(dl.txt) + '</div>';
 
+  if (!ids.length) {
+    return h + '<div class="card"><div class="cardtop"><span class="dot"></span><span class="tag">MIKE5 · heute</span></div>' +
+      '<div class="ctitle">' + curFocus().lbl + ' · ' + RLABEL[db.set.ruest] + '</div>' +
+      '<div class="csub">Keine Übung passt zu dieser Kombination aus Fokus, Gerät und Rüstart.</div>' +
+      '<div class="ghost thin" data-a="focus:ganz">Auf Ganzkörper zurücksetzen</div></div><div class="spacer"></div>';
+  }
+
   h += '<div class="card"><div class="cardtop"><span class="dot"></span><span class="tag">MIKE5 · heute</span><span class="mono ml">' +
     (turnAt(ids) > 0 ? '1× drehen' : 'kein Umbau') + '</span></div>' +
     '<div class="ctitle">' + curFocus().lbl + ' · ' + RLABEL[db.set.ruest] + '</div>' +
@@ -1161,7 +1268,8 @@ function vHeute() {
       '<span class="pname">' + esc(e.name) + '</span><span class="pload">' +
       (isEigen(e) ? 'Eigengewicht' : 'St. ' + fmt(n) + ' · ' + kgLabel(n) + ' kg') + '</span></div>';
   });
-  h += '</div><div class="cta" data-a="start">Training starten <b>→</b></div></div>';
+  h += '</div><div class="ghost thin" data-a="mix">Andere Übungen vorschlagen</div>' +
+    '<div class="cta" data-a="start">Training starten <b>→</b></div></div>';
 
   var gains = EX.filter(function (e) { return histOf(e.slug).length > 1; }).slice(0, 6);
   if (gains.length) {
@@ -1438,7 +1546,7 @@ function vRechner() {
     KOLBEN.map(function (k, i) { return '<div class="kol' + (db.set.kolben === i ? ' on' : '') + '" data-a="kol:' + i + '">' + k.label + '</div>'; }).join('') +
     '</div><div class="pad2"><div class="setupline"><span class="sq"></span>' + setupLabel() + '</div>' +
     '<div class="rowb"><span>Körpergewicht · für kcal</span><b>' + db.set.bw + ' kg</b></div>' +
-    '<input type="range" id="bw" min="45" max="140" value="' + db.set.bw + '">' +
+    '<input type="range" id="bw" min="20" max="140" value="' + db.set.bw + '">' +
     '<div class="rfilter tight">' + ['alle', 'nur', 'ohne'].map(function (m) {
       return '<div class="rc' + (dsMode() === m ? ' on' : '') + '" data-a="dsm:' + m + '">' + DSL[m] + '</div>';
     }).join('') + '</div>' +
@@ -1468,15 +1576,52 @@ function vProfil() {
   var h = '<div class="pad"><h1 class="h1">Profil</h1>' +
     '<p class="lead">Grundlage für die Startstufe bei Übungen ohne Verlauf. Danach zählt nur, was du tatsächlich schaffst.</p></div>';
 
+  h += '<div class="rowhead"><span>Wer trainiert</span><span class="mono">' +
+    plural(prof.list.length, 'Profil', 'Profile') + '</span></div><div class="levels">';
+  prof.list.forEach(function (p) {
+    var ps = profStat(p.id);
+    h += '<div class="lvl' + (p.id === prof.cur ? ' on' : '') + '" data-a="prof:' + p.id + '">' +
+      '<b>' + esc(p.name) + '</b><i>' + (p.id === prof.cur ? 'aktiv · ' : '') +
+      plural(ps.sess, 'Einheit', 'Einheiten') + '</i></div>';
+  });
+  h += '</div><div class="block edge"><div class="pad2">' +
+    '<input class="pinput" id="pnew" type="text" maxlength="18" placeholder="Name" value="' + esc(st.pname || '') + '">' +
+    '<div class="ghostrow"><div class="ghost" data-a="pnew">Neues Profil</div>' +
+    '<div class="ghost" data-a="pren">Umbenennen</div></div>' +
+    '<p class="fine">Jedes Profil hat eigene Einstellungen, Stufen und einen eigenen Verlauf. Gewechselt wird oben mit einem Tipp.</p>' +
+    (prof.list.length > 1 ? '<div class="ghost danger" data-a="pdel">„' + esc(curProf().name) + '" löschen</div>' : '') +
+    '</div></div>';
+
+  h += '<div class="rowhead"><span>Körper</span><span class="mono">' + esc(curProf().name) + '</span></div>';
   h += '<div class="block edge"><div class="pad2">' +
     '<div class="rowb"><span>Körpergewicht</span><b>' + s.bw + ' kg</b></div>' +
-    '<input type="range" id="bw" min="45" max="140" value="' + s.bw + '">' +
+    '<input type="range" id="bw" min="20" max="140" value="' + s.bw + '">' +
     '<div class="rowb" style="margin-top:18px"><span>Alter</span><b>' + (s.alter || 35) + ' Jahre</b></div>' +
-    '<input type="range" id="alter" min="16" max="80" value="' + (s.alter || 35) + '">' +
+    '<input type="range" id="alter" min="6" max="80" value="' + (s.alter || 35) + '">' +
     '</div><div class="kols">' +
     [['m', 'Männlich'], ['w', 'Weiblich'], ['x', 'Keine Angabe']].map(function (x) {
       return '<div class="kol' + (s.sex === x[0] ? ' on' : '') + '" data-a="sex:' + x[0] + '">' + x[1] + '</div>';
     }).join('') + '</div></div>';
+
+  if (isKid() || isTeen()) {
+    var kidOk = db.set.kolben === 0 && !db.set.ds && (s.reps || 10) >= 12 && s.level === 'neu';
+    h += '<div class="rowhead"><span>' + (isKid() ? 'Kind · ' + s.alter + ' Jahre' : 'Jugendlich · ' + s.alter + ' Jahre') +
+      '</span><span class="mono">' + (kidOk ? 'eingestellt' : 'Vorschlag offen') + '</span></div>' +
+      '<div class="block edge"><div class="pad2">' +
+      '<div class="onblist kid">' +
+      '<div><u>Einzelschiene</u><span>Das DS zieht mit zwei Kolben doppelt. Auf S umstellen halbiert jede Stufe.</span></div>' +
+      '<div><u>Kolben 12</u><span>Der leichte Zylinder. Stufe 1 sind damit an der Einzelschiene 6 kg statt 13 kg.</span></div>' +
+      '<div><u>12–15 Wiederholungen</u><span>Leicht und oft. Erst wenn 15 sauber und ohne Schwung gehen, eine halbe Stufe höher.</span></div>' +
+      '<div><u>Untrainiert</u><span>Setzt alle Startschätzungen niedriger an.</span></div>' +
+      '<div><u>Technik vor Last</u><span>' + (isKid()
+        ? 'Vor der Pubertät wächst Kraft über Ansteuerung, nicht über Muskelmasse. Schwere Stufen bringen nichts. Eigengewichtübungen sind gleichwertig.'
+        : 'Ab etwa 14 darf die Last langsam steigen — in halben Stufen und erst bei sauberer Ausführung.') + '</span></div>' +
+      '</div>' +
+      (kidOk
+        ? '<div class="restinfo">Gerät und Vorgaben passen zum Alter.</div>'
+        : '<div class="ghost" data-a="kidset">Diese Einstellungen übernehmen</div>') +
+      '</div></div>';
+  }
 
   h += '<div class="rowhead"><span>Darstellung</span></div>' +
     '<div class="block edge"><div class="pad2">' +
@@ -1672,11 +1817,24 @@ function render() {
   var ae = document.activeElement, wasQ = ae && ae.id === 'q';
   var pos = wasQ ? ae.selectionStart : 0;
   var repI = ae && ae.classList && ae.classList.contains('repin') ? ae.getAttribute('data-slug') : null;
-  /* Scrollposition merken — sonst springt die Seite bei jedem +/- nach oben. */
+  /* Scrollposition merken — sonst springt die Seite bei jedem +/- nach oben.
+     Die Wiederherstellung läuft zweimal: sofort und nach dem nächsten Layout,
+     weil nachgeladene Bilder und Muskelkarten die Höhe noch verschieben. */
   var sc = app.querySelector('.scroll, .wbody'), top = sc ? sc.scrollTop : 0;
+  var keep = st._enter ? 0 : top;
   app.innerHTML = h;
   var sc2 = app.querySelector('.scroll, .wbody');
-  if (sc2 && top) sc2.scrollTop = top;
+  if (sc2) {
+    /* Ohne das Abschalten des weichen Scrollens animiert der Browser die
+       Wiederherstellung — die Seite gleitet sichtbar nach oben. */
+    var sb = sc2.style.scrollBehavior;
+    sc2.style.scrollBehavior = 'auto';
+    sc2.scrollTop = keep;
+    requestAnimationFrame(function () {
+      if (keep && sc2.scrollTop !== keep) sc2.scrollTop = keep;
+      sc2.style.scrollBehavior = sb;
+    });
+  }
   if (wasQ) { var q = document.getElementById('q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch (e) {} } }
   if (repI !== null) { var r = app.querySelector('.repin[data-slug="' + repI + '"]'); if (r) r.focus(); }
   wireThumbs();
@@ -1816,17 +1974,54 @@ app.addEventListener('click', function (ev) {
     var q0 = st.ask; st.ask = null;
     if (q0 && q0.kind === 'sess') { delSession(q0.id); st.session = null; toast('Einheit gelöscht'); }
     else if (q0 && q0.kind === 'ex') { delExercise(q0.id, q0.slug); toast('Übung gelöscht'); }
+    else if (q0 && q0.kind === 'prof') { delProfile(q0.id); toast('Profil gelöscht'); }
     else if (q0 && q0.kind === 'all') { db.log = []; db.sessions = []; save(); toast('Alle Trainingsdaten gelöscht'); }
   }
   else if (a === 'askall') st.ask = { kind: 'all', title: 'Alle Trainingsdaten löschen?',
     body: 'Durchgänge, Einheiten und der komplette Verlauf werden entfernt. Stufen, Vorgaben und Einstellungen bleiben.' };
-  else if (a === 'ruest') { db.set.ruest = arg; save(); }
-  else if (a === 'dsm') { db.set.dsMode = arg; db.set.hideDS = arg === 'ohne'; save(); }
-  else if (a === 'focus') { db.set.focus = arg; save(); toast('Fokus: ' + focusOf(arg).lbl); }
+  else if (a === 'ruest') { db.set.ruest = arg; st.mix = 0; save(); }
+  else if (a === 'dsm') { db.set.dsMode = arg; db.set.hideDS = arg === 'ohne'; st.mix = 0; save(); }
+  else if (a === 'focus') { db.set.focus = arg; st.mix = 0; save(); toast('Fokus: ' + focusOf(arg).lbl); }
+  else if (a === 'mix') { st.mix = (st.mix || 0) + 1; toast('Neuer Vorschlag'); }
+  else if (a === 'prof') {
+    if (st.wo) toast('Training läuft — erst beenden');
+    else { switchProfile(arg); toast('Profil: ' + curProf().name); }
+  }
+  else if (a === 'pnew') {
+    var pn = (st.pname || '').trim();
+    if (!pn) toast('Erst einen Namen eintragen');
+    else if (st.wo) toast('Training läuft — erst beenden');
+    else { addProfile(pn); st.pname = ''; toast('Profil „' + pn + '“ angelegt'); }
+  }
+  else if (a === 'pren') {
+    var pr0 = (st.pname || '').trim();
+    if (!pr0) toast('Erst einen Namen eintragen');
+    else { curProf().name = pr0; saveProfiles(); st.pname = ''; toast('Umbenannt in „' + pr0 + '“'); }
+  }
+  else if (a === 'pdel') {
+    if (st.wo) toast('Training läuft — erst beenden');
+    else st.ask = { kind: 'prof', id: prof.cur, title: 'Profil „' + curProf().name + '“ löschen?',
+      body: 'Einstellungen, Stufen und der komplette Verlauf dieser Person werden entfernt. Andere Profile bleiben unberührt.' };
+  }
   else if (a === 'ds') { db.set.ds = arg === '1'; save(); }
   else if (a === 'kol') { db.set.kolben = +arg; save(); }
   else if (a === 'sex') { db.set.sex = arg; save(); }
   else if (a === 'lvl') { db.set.level = arg; save(); }
+  else if (a === 'kidset') {
+    db.set.ds = false; db.set.kolben = 0; db.set.reps = 12;
+    db.set.rest = 60; db.set.level = 'neu';
+    db.set.dsMode = 'ohne'; db.set.hideDS = true;   // eine Schiene, also keine DS-Übungen
+    st.mix = 0;
+    /* Von Hand gesetzte oder geerbte Stufen nach unten deckeln — ein Verlauf
+       aus dem Erwachsenentraining darf hier nicht stehen bleiben. */
+    Object.keys(db.stufen || {}).forEach(function (sl) {
+      var v0 = schaetzung(sl);
+      if (!v0 || v0.fix) return;
+      var cap = v0.stufe || 1;
+      if (db.stufen[sl] > cap) db.stufen[sl] = cap;
+    });
+    save(); toast('Auf leichtes Training eingestellt');
+  }
   else if (a === 'sound') { db.set.sound = !(db.set.sound !== false); save(); if (db.set.sound) beep(); }
   else if (a === 'theme') { db.set.theme = arg; save(); applyLook(); }
   else if (a === 'st+') setStufe(arg, stufeOf(arg) + 0.5);
@@ -1940,6 +2135,7 @@ app.addEventListener('input', function (ev) {
     return;
   }
   if (ev.target.id === 'q') { st.q = ev.target.value; render(); }
+  else if (ev.target.id === 'pnew') { st.pname = ev.target.value; }
   else if (ev.target.id === 'bw') { db.set.bw = +ev.target.value; save(); render(); }
   else if (ev.target.id === 'alter') { db.set.alter = +ev.target.value; save(); render(); }
   else if (ev.target.id === 'zreps') { db.set.reps = +ev.target.value; save(); render(); }
@@ -1947,6 +2143,12 @@ app.addEventListener('input', function (ev) {
   else if (ev.target.id === 'hideds') { db.set.hideDS = ev.target.checked; save(); render(); }
   else if (ev.target.id === 'impf' && ev.target.files && ev.target.files[0]) doImport(ev.target.files[0]);
 });
+app.addEventListener('keydown', function (ev) {
+  if (ev.key === 'Enter' && ev.target.id === 'pnew') {
+    ev.preventDefault();
+    var b = app.querySelector('[data-a="pnew"]'); if (b) b.click();
+  }
+}, true);
 
 function toast(m) { st.toast = m; clearTimeout(toast._t); toast._t = setTimeout(function () { st.toast = null; render(); }, 1900); }
 
