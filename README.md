@@ -60,6 +60,17 @@ braucht keine Pakete und verändert deine Originaldateien nicht — es kopiert.
 Danach liegt neben den GIFs ein Ordner `media/` — den ins Repo-Wurzelverzeichnis
 verschieben, direkt neben `index.html`.
 
+### Vollständigkeit prüfen
+
+```
+cd /pfad/zum/repo
+python3 check-media.py
+```
+
+Listet jede Übung ohne Bewegtbild mit ihrer Adresse auf eisenhorn.com und dem
+erwarteten Dateinamen. Fehlende Bilder brechen nichts — die App zeigt dort das
+animierte Bewegungsschema.
+
 ### Wenn die Bilder im Deployment fehlen
 
 Häufigste Ursache: die Dateien liegen zwar in `media/`, aber noch unter ihren
@@ -217,6 +228,7 @@ Die Export-Datei ist gleichzeitig dein **Backup**: sie enthält alle Sätze, Stu
 | `manifest.webmanifest` | PWA-Manifest (Name, Icons, Vollbild) |
 | `icon-192.png`, `icon-512.png` | App-Icons fuer den Home-Bildschirm |
 | `rename-gifs.py` | GIFs einmalig auf die Slugs umbenennen (empfohlen) |
+| `check-media.py` | listet Übungen ohne Bewegtbild samt Quelladresse |
 | `rename-gifs.sh`, `rename-gifs.ps1` | ältere Shell-Varianten, auf macOS unzuverlässig |
 | `.github/workflows/deploy.yml` | Automatisches Deployment auf GitHub Pages |
 | `.gitignore` | schliesst `media/` und alle GIFs aus |
