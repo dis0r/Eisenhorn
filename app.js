@@ -91,8 +91,8 @@ var db = load();
 function load() {
   var d = { set: { ds: true, kolben: 1, bw: 64, ruest: 'Stange', rest: 75, reps: 10, hideDS: false, sound: true,
                    dsMode: 'alle', focus: 'ganz',
-                   alter: 42, sex: 'm', level: 'wieder' },
-            ver: 4, snotes: {}, stufen: {}, ruestOv: {}, eigenOv: {}, richtOv: {}, cfg: {}, notes: {}, log: [], sessions: [] };
+                   alter: 42, sex: 'm', level: 'wieder', groesse: 175 },
+            ver: 4, snotes: {}, stufen: {}, ruestOv: {}, eigenOv: {}, richtOv: {}, hoeheOv: {}, cfg: {}, notes: {}, log: [], sessions: [] };
   try {
     var raw = localStorage.getItem(profKey(prof.cur));
     if (raw) {
@@ -166,6 +166,92 @@ function ruestOf(name, slug) {
   return 'Ohne';
 }
 function ruestOfEx(e) { return db.ruestOv[e.slug] || e.r0; }
+
+/* ---------- Schlittenhöhe ----------
+   Die Vorbereitungstexte nennen den Körperpunkt, an dem der Schlitten sitzt
+   ("auf Hüfthöhe", "auf Schienbeinhöhe") oder eine Position an der Säule
+   ("in der Mitte der Säule", "ganz oben"). Aus Körpergröße und diesem Punkt
+   lässt sich eine Starthöhe rechnen. Das Horn ist nach Vorschrift 40 cm über
+   dem Boden montiert, die nutzbare Schiene darüber ist 200 cm lang.
+   Körperanteile nach Standard-Proportionen einer stehenden Person. */
+var MONT = 40, SCHIENE = 200;
+/* [Muster, Bezug, Anteil bzw. Schienenposition, Beschriftung] */
+var ANKER = [
+  [/ganz oben|höchsten? position|oberste position/, 'rail', 1, 'ganz oben an der Schiene'],
+  [/ganz unten|unterste position|bodennah/, 'rail', 0, 'ganz unten an der Schiene'],
+  [/gestreckten armen gerade noch|vollständig gestreckten armen/, 'reach', 1.16, 'gestreckte Arme über Kopf'],
+  [/kopfhöhe|über dem kopf|überkopf/, 'body', .93, 'Kopfhöhe'],
+  [/schulterhöhe/, 'body', .82, 'Schulterhöhe'],
+  [/oberbrust|schlüsselbein/, 'body', .8, 'Oberbrusthöhe'],
+  [/brusthöhe|über der brust|oberhalb deiner brust|oberhalb deines brustbeins/, 'body', .72, 'Brusthöhe'],
+  [/ellenbogenhöhe/, 'body', .63, 'Ellenbogenhöhe'],
+  [/bauchhöhe|nabelhöhe|bauchnabel/, 'body', .6, 'Bauchhöhe'],
+  [/hüfthöhe|hüftgelenk/, 'body', .52, 'Hüfthöhe'],
+  [/mitte deiner oberschenkel|oberschenkelmitte|oberschenkelhöhe/, 'body', .42, 'Mitte der Oberschenkel'],
+  [/kniehöhe|oberhalb deiner knie|oberhalb der knie/, 'body', .3, 'Kniehöhe'],
+  [/schienbein/, 'body', .13, 'Schienbeinhöhe'],
+  [/knöchelhöhe|fussgelenk|fußgelenk/, 'body', .06, 'Knöchelhöhe'],
+  [/mitte der säule|mittlerer position|mittleren position|mittlere position/, 'rail', .5, 'Mitte der Säule'],
+  [/obere[nr]? (bereich|position)|im oberen/, 'rail', .75, 'oberer Bereich'],
+  [/untere[nr]? (bereich|position)|im unteren/, 'rail', .18, 'unterer Bereich']
+];
+/* Früheste Nennung im Text gewinnt — der Aufbau steht im ersten Satz. */
+function ankerScan(s) {
+  if (!s) return null;
+  s = s.toLowerCase();
+  var best = null;
+  ANKER.forEach(function (a) {
+    var m = s.match(a[0]);
+    if (m && (!best || m.index < best.at)) best = { at: m.index, kind: a[1], f: a[2], lbl: a[3] };
+  });
+  return best;
+}
+/* Fallback über die Muskelgruppe, falls ein Text keinen Punkt nennt. */
+var MANKER = { Brust: [.72, 'Brusthöhe'], 'Rücken': [.6, 'Bauchhöhe'], Schultern: [.82, 'Schulterhöhe'],
+               Arme: [.63, 'Ellenbogenhöhe'], Beine: [.3, 'Kniehöhe'], Bauch: [.52, 'Hüfthöhe'] };
+function ankerOf(e) {
+  var tx = e.tx || {};
+  var a = ankerScan(tx.v) || ankerScan(tx.a);
+  if (a) return a;
+  var f = MANKER[e.m] || [.6, 'Bauchhöhe'];
+  return { kind: 'body', f: f[0], lbl: f[1], vage: true };
+}
+/* Haltung verschiebt jeden Körperpunkt nach unten. */
+function poseOf(e) {
+  var s = (e.name + ' ' + ((e.tx || {}).v || '') + ' ' + ((e.tx || {}).a || '')).toLowerCase();
+  if (/liegend|leg dich|legst du dich|auf dem rücken|rückenlage|bauchlage/.test(s)) return 'lieg';
+  if (/sitzend|sitzender|setz dich|setze dich|kniend|vierfüssler|vierfüßler/.test(s)) return 'sitz';
+  return 'steh';
+}
+function hoeheCalc(e) {
+  var H = db.set.groesse || 175, a = ankerOf(e), cm;
+  if (a.kind === 'rail') cm = MONT + a.f * SCHIENE;
+  else {
+    var p = poseOf(e);
+    /* Sitzend sinken die Körperpunkte auf gut die Hälfte plus Sitzhöhe,
+       liegend auf Rumpfdicke über dem Boden. */
+    if (p === 'sitz') cm = 45 + a.f * H * .55;
+    else if (p === 'lieg') cm = 15 + a.f * 34;
+    else cm = a.f * H;
+  }
+  return Math.max(MONT, Math.min(MONT + SCHIENE, Math.round(cm / 5) * 5));
+}
+function hoeheOf(e) {
+  var o = (db.hoeheOv || {})[e.slug];
+  return o === undefined ? hoeheCalc(e) : o;
+}
+function hoeheEigen(e) { return (db.hoeheOv || {})[e.slug] !== undefined; }
+function setHoehe(slug, cm) {
+  db.hoeheOv = db.hoeheOv || {};
+  if (cm === null) delete db.hoeheOv[slug];
+  else db.hoeheOv[slug] = Math.max(MONT, Math.min(MONT + SCHIENE, cm));
+  save();
+}
+/* Kurzfassung für Listen und Trainingskopf. */
+function hoeheLabel(e) {
+  var cm = hoeheOf(e);
+  return (e.ds ? 'beide Schlitten ' : 'Schlitten ') + cm + ' cm';
+}
 
 /* ---------- Gerätevariante ----------
    Ein Teil des Katalogs setzt das EISENHORN DS (zwei Schienen) voraus.
@@ -1342,6 +1428,23 @@ function vDetail() {
     '<div class="dt' + (tab === 'info' ? ' on' : '') + '" data-a="dtab:info">Anleitung</div></div>';
 
   if (tab === 'log') {
+    var ank = ankerOf(ex), hcm = hoeheOf(ex), hown = hoeheEigen(ex);
+    h += '<div class="block"><div class="blockhead"><span>Schlittenhöhe</span>' +
+      '<span class="mono">' + (hown ? 'von dir gesetzt' : ank.vage ? 'Schätzung' : ank.lbl) + '</span></div>' +
+      '<div class="hrow"><div class="sbtn" data-a="h-:' + ex.slug + '">−</div>' +
+      '<div class="hval"><b>' + hcm + '<em>cm</em></b><i>über Boden · ' + (hcm - MONT) + ' cm über der Hornmontage</i></div>' +
+      '<div class="sbtn" data-a="h+:' + ex.slug + '">+</div></div>' +
+      '<div class="pad2"><p class="fine">' +
+      (ex.ds ? 'Beide Schlitten auf dieselbe Höhe. ' : '') +
+      'Gerechnet aus ' + (db.set.groesse || 175) + ' cm Körpergröße' +
+      (ank.kind === 'rail' ? ' und der Position an der Säule (' + ank.lbl + ')'
+        : ' · ' + ank.lbl + (poseOf(ex) === 'sitz' ? ' im Sitzen' : poseOf(ex) === 'lieg' ? ' im Liegen' : '')) +
+      '. In 5-cm-Schritten anpassbar, der Wert bleibt gespeichert.' +
+      (hcm === MONT ? ' Tiefer geht es nicht — das Horn ist 40 cm über dem Boden montiert.'
+        : hcm === MONT + SCHIENE ? ' Das ist das obere Ende der Schiene.' : '') + '</p>' +
+      (hown ? '<div class="ghost thin" data-a="hres:' + ex.slug + '">Auf ' + hoeheCalc(ex) + ' cm zurücksetzen</div>' : '') +
+      '</div></div>';
+
     if (eig) {
       h += '<div class="lastbox wide note"><i>Eigengewichtsübung</i><b>Du arbeitest gegen den eigenen Körper — die Geräteeinstellung ist ein Anschlag, keine Last. Diese Sätze zählen als Arbeitssätze, aber mit 0 kg Volumen. Fortschritt läuft über Wiederholungen und Ausführung.</b></div>';
     } else {
@@ -1596,6 +1699,9 @@ function vProfil() {
   h += '<div class="block edge"><div class="pad2">' +
     '<div class="rowb"><span>Körpergewicht</span><b>' + s.bw + ' kg</b></div>' +
     '<input type="range" id="bw" min="20" max="140" value="' + s.bw + '">' +
+    '<div class="rowb" style="margin-top:18px"><span>Körpergröße</span><b>' + (s.groesse || 175) + ' cm</b></div>' +
+    '<input type="range" id="gr" min="100" max="210" value="' + (s.groesse || 175) + '">' +
+    '<p class="fine">Daraus rechnet jede Übung ihre Schlittenhöhe — der Wert steht im Übungsdetail und ist dort einzeln anpassbar.</p>' +
     '<div class="rowb" style="margin-top:18px"><span>Alter</span><b>' + (s.alter || 35) + ' Jahre</b></div>' +
     '<input type="range" id="alter" min="6" max="80" value="' + (s.alter || 35) + '">' +
     '</div><div class="kols">' +
@@ -1681,7 +1787,7 @@ function vWorkout() {
   h += media(e, 186) +
     '<div class="pad"><div class="wnamerow"><div class="minimap">' + miniFig(e) + '</div>' +
     '<div><div class="wname">' + esc(e.name) + '</div>' +
-    '<div class="wmeta">' + e.m + ' · ' + RLABEL[ruestOfEx(e)] + ' · ' + RICHTL[richtOf(e)] + '</div></div></div></div>';
+    '<div class="wmeta">' + e.m + ' · ' + RLABEL[ruestOfEx(e)] + ' · ' + hoeheLabel(e) + '</div></div></div></div>';
 
   h += '<div class="lastbox">' + (prev
       ? '<i>Letztes Mal</i><b>' + perfLine(prev, isEigen(e)) + '</b>'
@@ -2036,6 +2142,9 @@ app.addEventListener('click', function (ev) {
   }
   else if (a === 'editr') st.editR = !st.editR;
   else if (a === 'setr') { db.ruestOv[two[0]] = two[1]; st.editR = false; save(); }
+  else if (a === 'h+') { setHoehe(arg, hoeheOf(BY[arg]) + 5); }
+  else if (a === 'h-') { setHoehe(arg, hoeheOf(BY[arg]) - 5); }
+  else if (a === 'hres') { setHoehe(arg, null); toast('Zurück auf den gerechneten Wert'); }
   else if (a === 'eigen') { setEigen(arg, !isEigen(BY[arg])); toast(isEigen(BY[arg]) ? 'Gewicht wird nicht gerechnet' : 'Stufe zählt wieder als Last'); }
   else if (a === 'logone') {
     var rv0 = repVal(arg), warmed = st.warm;
@@ -2138,6 +2247,7 @@ app.addEventListener('input', function (ev) {
   else if (ev.target.id === 'pnew') { st.pname = ev.target.value; }
   else if (ev.target.id === 'bw') { db.set.bw = +ev.target.value; save(); render(); }
   else if (ev.target.id === 'alter') { db.set.alter = +ev.target.value; save(); render(); }
+  else if (ev.target.id === 'gr') { db.set.groesse = +ev.target.value; save(); render(); }
   else if (ev.target.id === 'zreps') { db.set.reps = +ev.target.value; save(); render(); }
   else if (ev.target.id === 'tsize') { db.set.ts = +ev.target.value / 100; save(); applyLook(); render(); }
   else if (ev.target.id === 'hideds') { db.set.hideDS = ev.target.checked; save(); render(); }
@@ -2278,7 +2388,7 @@ function doExport() {
     /* Rohdaten für das Wiedereinlesen — die Felder oben sind für Health
        umbenannt und taugen nicht als Sicherung. */
     ver: db.ver || 4, sessionsRaw: db.sessions, cfg: db.cfg, notes: db.notes,
-    ruestOv: db.ruestOv, eigenOv: db.eigenOv, richtOv: db.richtOv, snotes: db.snotes, set: db.set };
+    ruestOv: db.ruestOv, eigenOv: db.eigenOv, richtOv: db.richtOv, hoeheOv: db.hoeheOv, snotes: db.snotes, set: db.set };
   var blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2307,7 +2417,7 @@ function doImport(file) {
       if (x && x.t && !st0[x.t] && x.sec !== undefined) { st0[x.t] = 1; db.sessions.push(x); }
     });
     db.sessions.sort(function (a, b) { return a.t - b.t; });
-    ['stufen', 'cfg', 'notes', 'ruestOv', 'eigenOv', 'richtOv', 'snotes'].forEach(function (k) {
+    ['stufen', 'cfg', 'notes', 'ruestOv', 'eigenOv', 'richtOv', 'hoeheOv', 'snotes'].forEach(function (k) {
       var src = p[k]; if (!src) return;
       db[k] = db[k] || {};
       for (var q in src) if (db[k][q] === undefined) db[k][q] = src[q];
