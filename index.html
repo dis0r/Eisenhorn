@@ -235,7 +235,10 @@ a{color:var(--acc);text-decoration:none}a:hover{color:var(--acc-hover)}
 .tipbox p{margin:8px 0 0;font:400 15px/1.55 var(--body);color:var(--fg2);text-wrap:pretty}
 
 .prrow{display:flex;gap:1px;background:var(--line);margin:18px 22px 0}
-.prcell{flex:1;background:var(--tint-gold);padding:13px 14px}
+.prcell{flex:1;min-width:0;background:var(--tint-gold);padding:13px 14px}
+.prrow.tri .prcell{padding:13px 10px}
+.prrow.tri .prcell b{font-size:30px}
+.prrow.tri .prcell u{font-size:10px}
 .prcell i{display:block;font:600 11px/1.05 var(--body);color:var(--ink-gold);font-style:normal}
 .prcell b{display:block;font:700 38px/.92 var(--cond);color:var(--fg);margin-top:8px}
 .prcell u{display:block;font:500 11px/1 var(--mono);color:var(--dim2);margin-top:6px;text-decoration:none}
@@ -480,12 +483,11 @@ nav{flex:none;height:calc(78px + var(--bot));padding-bottom:var(--bot);backgroun
   border:1px solid var(--acc);color:var(--acc);cursor:pointer;
   font:600 11px/1 var(--cond);letter-spacing:.14em;text-transform:uppercase}
 
-.rirbar{border-top:1px solid var(--line);padding:12px 14px}
-.rirbar>span{display:block;font:500 12px/1.3 var(--body);color:var(--dim)}
-.rirpick{display:flex;gap:6px;margin-top:10px}
-.rp{flex:1;min-height:46px;display:flex;align-items:center;justify-content:center;
-  border:1px solid var(--line2);color:var(--dim);cursor:pointer;font:700 17px/1 var(--cond)}
-.rp.on{background:var(--acc);border-color:var(--acc);color:var(--accfg)}
+.recs{display:flex;gap:4px;flex:none}
+.recb{display:flex;align-items:center;height:20px;padding:0 7px;background:var(--acc);
+  color:var(--accfg);font:700 10px/1 var(--cond);letter-spacing:.1em;text-transform:uppercase}
+.recline{padding:9px 14px;border-bottom:1px solid var(--line);background:var(--acc);
+  color:var(--accfg);font:700 11px/1 var(--cond);letter-spacing:.13em;text-transform:uppercase}
 .warmrow{display:flex;align-items:center;gap:10px;padding:13px 14px;border-top:1px solid var(--line);
   cursor:pointer;min-height:48px;font:500 12px/1.3 var(--body);color:var(--dim2)}
 .warmrow .box{flex:none;width:18px;height:18px;border:1.5px solid var(--line2)}

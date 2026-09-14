@@ -92,7 +92,7 @@ function load() {
   var d = { set: { ds: true, kolben: 1, bw: 64, ruest: 'Stange', rest: 75, reps: 10, hideDS: false, sound: true,
                    dsMode: 'alle', focus: 'ganz',
                    alter: 42, sex: 'm', level: 'wieder', groesse: 175 },
-            ver: 4, snotes: {}, stufen: {}, ruestOv: {}, eigenOv: {}, richtOv: {}, hoeheOv: {}, cfg: {}, notes: {}, log: [], sessions: [] };
+            ver: 4, snotes: {}, stufen: {}, ruestOv: {}, eigenOv: {}, richtOv: {}, skalaOv: {}, pistOv: {}, cfg: {}, notes: {}, log: [], sessions: [] };
   try {
     var raw = localStorage.getItem(profKey(prof.cur));
     if (raw) {
@@ -167,14 +167,43 @@ function ruestOf(name, slug) {
 }
 function ruestOfEx(e) { return db.ruestOv[e.slug] || e.r0; }
 
-/* ---------- Schlittenhöhe ----------
+/* ---------- Griffhöhe ----------
    Die Vorbereitungstexte nennen den Körperpunkt, an dem der Schlitten sitzt
    ("auf Hüfthöhe", "auf Schienbeinhöhe") oder eine Position an der Säule
    ("in der Mitte der Säule", "ganz oben"). Aus Körpergröße und diesem Punkt
-   lässt sich eine Starthöhe rechnen. Das Horn ist nach Vorschrift 40 cm über
-   dem Boden montiert, die nutzbare Schiene darüber ist 200 cm lang.
+   lässt sich die gewünschte Griffhöhe rechnen.
+
+   Eingestellt wird aber nicht der Griff, sondern die Hornmitte — über die
+   Skala 0–160 cm am Horn, wobei 0 genau 40 cm über dem Boden liegt
+   (Montagevorschrift). Zwischen Hornmitte und Griff liegt ein Versatz:
+   die Hornspitze sitzt 35 cm über bzw. unter der Hornmitte, je nachdem wohin
+   der Hornarm zeigt, und ein als Schlaufe gelegtes Griffband (120 cm lang)
+   hängt weitere 60 cm darunter. Beim Seilzug läuft das Seil 5 cm unter der
+   Hornmitte aus. Die App rechnet die Griffhöhe also rückwärts auf den
+   Skalenwert, den du am Gerät tatsächlich ablesen kannst.
    Körperanteile nach Standard-Proportionen einer stehenden Person. */
-var MONT = 40, SCHIENE = 200;
+var MONT = 40, SKALA_MAX = 160;
+var HORNARM = 35, BANDABHANG = 60, SEILAUSLAUF = 5;
+var HORNL = { oben: 'Hornarm nach oben', waag: 'Hornarm waagerecht', unten: 'Hornarm nach unten' };
+function hornDir() { return HORNL[db.set.horn] ? db.set.horn : 'waag'; }
+/* Hornspitze gegenüber der Hornmitte. */
+function hornSpitze() { var d = hornDir(); return d === 'oben' ? HORNARM : d === 'unten' ? -HORNARM : 0; }
+/* Hängt bei dieser Übung ein Griffband zwischen Horn und Griff? */
+function bandOf(e) {
+  var t = (((e.tx || {}).v || '') + ' ' + (((e.tx || {}).a) || '')).toLowerCase();
+  return /griffb(a|ä)nd|hornschlaufe/.test(t);
+}
+/* Versatz von der Hornmitte zum Griff, nach Rüstart. */
+function versatzOf(e) {
+  if (ruestOfEx(e) === 'Seilzug') return -SEILAUSLAUF;
+  return hornSpitze() + (bandOf(e) ? -BANDABHANG : 0);
+}
+function versatzTxt(e) {
+  if (ruestOfEx(e) === 'Seilzug') return 'Seilauslauf ' + SEILAUSLAUF + ' cm unter der Hornmitte';
+  var d = hornDir(), p = d === 'waag' ? 'Hornspitze auf Mittenhöhe' :
+    'Hornspitze ' + HORNARM + ' cm ' + (d === 'oben' ? 'über' : 'unter') + ' der Mitte';
+  return p + (bandOf(e) ? ', Griffband hängt ' + BANDABHANG + ' cm tiefer' : ', Stange direkt am Horn');
+}
 /* [Muster, Bezug, Anteil bzw. Schienenposition, Beschriftung] */
 var ANKER = [
   [/ganz oben|höchsten? position|oberste position/, 'rail', 1, 'ganz oben an der Schiene'],
@@ -213,44 +242,64 @@ function ankerOf(e) {
   var tx = e.tx || {};
   var a = ankerScan(tx.v) || ankerScan(tx.a);
   if (a) return a;
+  /* Ohne genannten Punkt: hängende Übungen nach ganz oben, alles andere
+     auf den Mittelwert der Muskelgruppe. */
+  if (haengtOf(e)) return { kind: 'rail', f: 1, lbl: 'ganz oben an der Schiene', vage: true };
   var f = MANKER[e.m] || [.6, 'Bauchhöhe'];
   return { kind: 'body', f: f[0], lbl: f[1], vage: true };
 }
 /* Haltung verschiebt jeden Körperpunkt nach unten. */
 function poseOf(e) {
   var s = (e.name + ' ' + ((e.tx || {}).v || '') + ' ' + ((e.tx || {}).a || '')).toLowerCase();
-  if (/liegend|leg dich|legst du dich|auf dem rücken|rückenlage|bauchlage/.test(s)) return 'lieg';
-  if (/sitzend|sitzender|setz dich|setze dich|kniend|vierfüssler|vierfüßler/.test(s)) return 'sitz';
+  if (/lieg|leg(e|st|t)? dich|auf dem rücken|rückenlage|bauchlage|auf den boden/.test(s)) return 'lieg';
+  if (/sitz|setz(e|t)? dich|kniend|knie dich|vierfüssler|vierfüßler/.test(s)) return 'sitz';
   return 'steh';
 }
-function hoeheCalc(e) {
-  var H = db.set.groesse || 175, a = ankerOf(e), cm;
-  if (a.kind === 'rail') cm = MONT + a.f * SCHIENE;
-  else {
-    var p = poseOf(e);
-    /* Sitzend sinken die Körperpunkte auf gut die Hälfte plus Sitzhöhe,
-       liegend auf Rumpfdicke über dem Boden. */
-    if (p === 'sitz') cm = 45 + a.f * H * .55;
-    else if (p === 'lieg') cm = 15 + a.f * 34;
-    else cm = a.f * H;
-  }
-  return Math.max(MONT, Math.min(MONT + SCHIENE, Math.round(cm / 5) * 5));
+/* Übungen, bei denen man an der Stange hängt oder von ganz oben zieht —
+   dort taugt kein Muskelgruppen-Mittelwert, der Anker sitzt über Kopf. */
+function haengtOf(e) {
+  var s = (e.name + ' ' + ((e.tx || {}).v || '') + ' ' + ((e.tx || {}).a || '')).toLowerCase();
+  return /hängend|hängst|klimmzug|dich hängen|freihängend|höchste[nr]? position und|ganz oben/.test(s);
 }
-function hoeheOf(e) {
-  var o = (db.hoeheOv || {})[e.slug];
-  return o === undefined ? hoeheCalc(e) : o;
+/* Gewünschte Griffhöhe über dem Boden, allein aus Körper und Haltung. */
+function griffWunsch(e) {
+  var H = db.set.groesse || 175, a = ankerOf(e), p = poseOf(e);
+  /* Sitzend sinken die Körperpunkte auf gut die Hälfte plus Sitzhöhe,
+     liegend auf Rumpfdicke über dem Boden. */
+  if (p === 'sitz') return 45 + a.f * H * .55;
+  if (p === 'lieg') return 15 + a.f * 34;
+  return a.f * H;
 }
-function hoeheEigen(e) { return (db.hoeheOv || {})[e.slug] !== undefined; }
-function setHoehe(slug, cm) {
-  db.hoeheOv = db.hoeheOv || {};
-  if (cm === null) delete db.hoeheOv[slug];
-  else db.hoeheOv[slug] = Math.max(MONT, Math.min(MONT + SCHIENE, cm));
+/* Skalenwert am Horn (0–160). Nennt der Text eine Position an der Säule,
+   ist das schon der Skalenwert — dort ist nichts umzurechnen. */
+function skalaCalc(e) {
+  var a = ankerOf(e), v;
+  if (a.kind === 'rail') v = a.f * SKALA_MAX;
+  else v = griffWunsch(e) - versatzOf(e) - MONT;
+  return Math.max(0, Math.min(SKALA_MAX, Math.round(v / 5) * 5));
+}
+function skalaEx(e) {
+  var o = (db.skalaOv || {})[e.slug];
+  return o === undefined ? skalaCalc(e) : o;
+}
+function skalaEigen(e) { return (db.skalaOv || {})[e.slug] !== undefined; }
+function setSkala(slug, v) {
+  db.skalaOv = db.skalaOv || {};
+  if (v === null) delete db.skalaOv[slug];
+  else db.skalaOv[slug] = Math.max(0, Math.min(SKALA_MAX, v));
   save();
+}
+/* Was aus einem Skalenwert am Gerät folgt. Der Griff kann nicht unter den
+   Boden — hängt das Band tiefer als die Hornmitte erlaubt, liegt es einfach
+   lose und die Hände arbeiten höher. Dann ist keine Griffhöhe angebbar. */
+function hornHoehe(v) { return MONT + v; }
+function griffHoehe(e, v) {
+  var g = MONT + v + versatzOf(e);
+  return g < 0 ? null : g;
 }
 /* Kurzfassung für Listen und Trainingskopf. */
 function hoeheLabel(e) {
-  var cm = hoeheOf(e);
-  return (e.ds ? 'beide Schlitten ' : 'Schlitten ') + cm + ' cm';
+  return (e.ds ? 'Skala beide ' : 'Skala ') + skalaEx(e) + ' cm';
 }
 
 /* ---------- Gerätevariante ----------
@@ -455,15 +504,15 @@ function dgBlock(slug) {
   var zt = cfgOf(slug).reps;
   var h = '<div class="cursat"><div class="cursath"><span>Durchgang ' + (hard.length + 1) + '</span>' +
     '<b>' + (hard.length ? plural(hard.length, 'Durchgang', 'Durchgänge') + ' · ' + dgSum(hard) + ' Wdh. im Satz'
-                         : 'Satz noch offen') + '</b></div><div class="replist">' +
+                         : 'Satz noch offen') + '</b></div>' +
+    (function () {
+      if (!hard.length) return '';
+      var sr = satzRec(slug, sidOf(hard[0]));
+      return sr ? '<div class="recline">Stärkster Satz bisher · ' + sr + '</div>' : '';
+    })() + '<div class="replist">' +
     '<div class="reprow big"><div class="sbtn" data-a="rp:' + slug + '|-1">–</div>' +
     '<input type="number" inputmode="numeric" min="1" max="99" value="' + repVal(slug) + '" data-slug="' + slug + '" class="repin">' +
     '<div class="sbtn" data-a="rp:' + slug + '|1">+</div><span class="repu">Wdh.</span></div>';
-  h += '<div class="rirbar"><span>Wie viele hättest du noch geschafft?</span><div class="rirpick">';
-  [0, 1, 2, 3, 4].forEach(function (v) {
-    h += '<div class="rp' + (st.rir === v && !st.warm ? ' on' : '') + '" data-a="rir:' + v + '">' + (v === 4 ? '4+' : v) + '</div>';
-  });
-  h += '</div></div>';
   h += '<div class="rulerow">Ziel: 3 Durchgänge mit ' + zt + ' Wdh. → ' +
     (zt < repHi() ? 'danach ' + Math.min(repHi(), zt + repStep()) + ' Wdh.' : 'danach nächste Stufe, zurück auf ' + repLo() + ' Wdh.') + '</div>';
   h += '<div class="warmrow' + (st.warm ? ' on' : '') + '" data-a="warm"><span class="box"></span>' +
@@ -481,7 +530,7 @@ function dgDone(slug) {
     h += '<div class="set ok' + (r.warm ? ' warm' : '') + '"><span class="mono">' +
       (r.warm ? 'AUFW.' : 'DG ' + hard) + '</span><b>' + r.reps + ' Wdh.' +
       '<u>' + (isEigen(BY[slug]) ? 'Eigengewicht' : 'St. ' + fmt(r.stufe)) +
-      (r.rir !== undefined ? ' · RIR ' + r.rir : '') + '</u></b>' +
+      '</u></b>' + recBadges(slug, r) +
       '<span class="tagr" data-a="dgdel:' + slug + '~' + r.t + '">↺</span></div>';
   });
   return h + '</div>';
@@ -538,6 +587,84 @@ function prOf(slug, exceptT) {
   });
   return any ? { vol: vol, load: load, rep: rep, eigen: eig } : null;
 }
+/* ---------- Rekorde ----------
+   Motivation braucht viele erreichbare Bestwerte, nicht einen einzigen. Jeder
+   Durchgang wird deshalb gegen alles gemessen, was zeitlich vor ihm liegt:
+   die schwerste Stufe, das höchste Volumen in einem Durchgang und die meisten
+   Wiederholungen auf dieser Stufe. Am Satzende kommt der Satz als Ganzes dazu.
+   Verglichen wird nur mit Früherem — ein Rekord bleibt also ein Rekord, auch
+   wenn er später überboten wird. */
+var RECL = { stufe: 'Neue Bestleistung: schwerste Stufe', dg: 'Neue Bestleistung: stärkster Durchgang',
+             reps: 'Neue Bestleistung: meiste Wiederholungen', satz: 'Neue Bestleistung: stärkster Satz' };
+var RECS = { stufe: 'Stufe', dg: 'Volumen', reps: 'Wdh.', satz: 'Satz' };
+function recsOf(slug, r) {
+  var eig = isEigen(BY[slug]), out = [];
+  var prev = db.log.filter(function (l) {
+    return l.slug === slug && isSet(l) && !l.warm && l.t < r.t;
+  });
+  if (!prev.length) return out;
+  var mx = function (f) { return Math.max.apply(null, prev.map(f)); };
+  if (!eig) {
+    if (r.stufe > mx(function (l) { return l.stufe; })) out.push('stufe');
+    if (setVol(r) > mx(setVol)) out.push('dg');
+  }
+  /* Wiederholungen nur gegen gleich schwere oder schwerere Durchgänge — sonst
+     wäre ein Rückfall auf Stufe 1 mit 30 Wdh. ein "Rekord". Bei einer neuen
+     Höchststufe ist das ohnehin schon gemeldet. */
+  if (out.indexOf('stufe') < 0) {
+    var gleich = eig ? prev : prev.filter(function (l) { return l.stufe >= r.stufe; });
+    if (gleich.length && r.reps > Math.max.apply(null, gleich.map(function (l) { return l.reps; }))) out.push('reps');
+  }
+  return out;
+}
+/* Der Satz als Ganzes: Volumen aller Durchgänge, bei Eigengewicht die
+   Gesamtwiederholungen. */
+function satzRec(slug, sid) {
+  var eig = isEigen(BY[slug]), by = {}, order = [];
+  db.log.forEach(function (l) {
+    if (l.slug !== slug || !isSet(l) || l.warm) return;
+    var id = String(sidOf(l));
+    if (!by[id]) { by[id] = { vol: 0, reps: 0 }; order.push(id); }
+    by[id].vol += setVol(l); by[id].reps += l.reps;
+  });
+  var me = by[String(sid)];
+  if (!me || order.length < 2) return null;
+  var val = eig ? me.reps : me.vol, beaten = false;
+  order.forEach(function (k) {
+    if (k === String(sid)) return;
+    if ((eig ? by[k].reps : by[k].vol) >= val) beaten = true;
+  });
+  if (beaten) return null;
+  return eig ? me.reps + ' Wdh. im Satz' : Math.round(val).toLocaleString('de-DE') + ' kg im Satz';
+}
+/* Der stärkste Satz, den es für diese Übung je gab — anders als satzRec()
+   nicht auf einen laufenden Satz bezogen, sondern als Bestwert der Historie. */
+function bestSatz(slug) {
+  var eig = isEigen(BY[slug]), by = {}, order = [];
+  db.log.forEach(function (l) {
+    if (l.slug !== slug || !isSet(l) || l.warm) return;
+    var id = String(sidOf(l));
+    if (!by[id]) { by[id] = { vol: 0, reps: 0, t: l.t, sets: 0 }; order.push(id); }
+    by[id].vol += setVol(l); by[id].reps += l.reps; by[id].sets++;
+    if (l.t > by[id].t) by[id].t = l.t;
+  });
+  if (!order.length) return null;
+  var best = null;
+  order.forEach(function (k) {
+    var o = by[k];
+    if (!best || (eig ? o.reps > best.reps : o.vol > best.vol)) best = o;
+  });
+  return best ? { eigen: eig, vol: best.vol, reps: best.reps, sets: best.sets, t: best.t } : null;
+}
+function recChips(k) {
+  if (!k || !k.length) return '';
+  return '<span class="recs">' + k.map(function (x) {
+    return '<span class="recb" title="' + RECL[x] + '">' + RECS[x] + '</span>';
+  }).join('') + '</span>';
+}
+function recBadges(slug, r) {
+  return r.warm ? '' : recChips(r.rec || recsOf(slug, r));
+}
 function prLine(p, eig) {
   if (eig) return p.reps + ' Wdh. · Eigengewicht · ' + dstr(p.t);
   return Math.round(p.vol).toLocaleString('de-DE') + ' kg · Stufe ' + fmt(p.stufe) +
@@ -545,8 +672,8 @@ function prLine(p, eig) {
 }
 
 /* ---------- Startstufe aus dem Profil ----------
-   Nur relevant, solange für eine Übung noch nichts protokolliert ist. Sobald
-   ein Satz mit RIR vorliegt, übernimmt die Progressionslogik.
+   Nur relevant, solange für eine Übung noch nichts protokolliert ist. Danach
+   übernimmt die Progressionslogik aus den geschafften Wiederholungen.
 
    Last = Körpergewicht × Übungsfaktor × Geschlecht × Alter × Erfahrung.
    Das ergibt eine grobe 1RM-Schätzung; für Arbeitssätze mit 8–12 Wdh. werden
@@ -603,10 +730,10 @@ function setEigen(slug, v) {
    weiter als Arbeitssatz (Muskelkarte, Sätze pro Woche), nur nicht als kg. */
 function setVol(l) {
   if (isEigen(BY[l.slug])) return 0;
-  return (l.kg || kgStart(l.stufe)) * l.reps;
+  return (l.kg || kgStart(l.stufe, l.slug)) * l.reps;
 }
 /* Lastangabe für Listen und Kopfzeilen. */
-function loadLabel(e, n) { return isEigen(e) ? 'Eigengewicht' : kgLabel(n) + ' kg'; }
+function loadLabel(e, n) { return isEigen(e) ? 'Eigengewicht' : kgLabel(n, e.slug) + ' kg'; }
 /* Reine Schätzung aus dem Profil, unabhängig davon, ob die Übung schon
    protokolliert wurde — wird zum Deckeln geerbter Stufen gebraucht. */
 function schaetzung(slug) {
@@ -624,12 +751,12 @@ function schaetzung(slug) {
   if (isEigen(e)) {
     return { fix: true, txt: 'Eigengewichtsübung — du arbeitest gegen den eigenen Körper. Steigerung läuft über Wiederholungen und Ausführung.' };
   }
-  var k = cfg(), roh = kg / (mult() * k.f) - 1;
+  var k = cfg(), roh = kg / (multOf(slug) * k.f) - 1;
   var stufe = Math.round(roh * 2) / 2;
   if (stufe < 1) {
     return { unter: true, kg: Math.round(kg),
-      txt: 'Geschätzt ' + Math.round(kg) + ' kg — das liegt unter Stufe 1 (' + fmt(kgStart(1)) +
-        ' kg mit ' + setupLabel() + '). ' + (isKid()
+      txt: 'Geschätzt ' + Math.round(kg) + ' kg — das liegt unter Stufe 1 (' + fmt(kgStart(1, slug)) +
+        ' kg mit ' + setupLabel(slug) + '). ' + (isKid()
           ? (db.set.ds === false && db.set.kolben === 0
               ? 'Stufe 1 mit 12–15 sauberen Wiederholungen — oder die Übung ganz ohne Gerät üben.'
               : 'Für Kinder: Einzelschiene und Kolben 12 einstellen, dann Stufe 1 mit 12–15 sauberen Wiederholungen — oder die Übung ganz ohne Gerät üben.')
@@ -637,7 +764,7 @@ function schaetzung(slug) {
   }
   stufe = Math.min(12, stufe);
   return { stufe: stufe, kg: Math.round(kg),
-    txt: 'Startvorschlag Stufe ' + fmt(stufe) + ' ≈ ' + kgLabel(stufe) + ' kg. ' +
+    txt: 'Startvorschlag Stufe ' + fmt(stufe) + ' ≈ ' + kgLabel(stufe, slug) + ' kg. ' +
       (isKid() ? 'Für Kinder bewusst niedrig — 12–15 Wiederholungen, Technik geht vor Last.' : 'Lieber zu leicht beginnen.') };
 }
 /* Derselbe Wert, aber nur solange die Übung noch keinen eigenen Verlauf hat —
@@ -656,8 +783,9 @@ function repLo() { return db.set.reps || 10; }
 function repHi() { return repLo() + 4; }
 function repStep() { return 2; }
 
-/* Progressionsvorschlag aus Wiederholungen und Anstrengung (RIR = Reps in
-   Reserve). */
+/* Progressionsvorschlag allein aus den geschafften Wiederholungen. Trainiert
+   wird bis zum Muskelversagen — die Wiederholungszahl IST das Maß für die
+   Anstrengung, eine Reserve-Abfrage bringt nichts dazu. */
 function suggestion(slug) {
   var all = db.log.filter(function (l) { return l.slug === slug && isSet(l) && !l.warm; });
   if (!all.length) return null;
@@ -665,26 +793,8 @@ function suggestion(slug) {
   var ls = all.filter(function (l) { return sidOf(l) === lastSid0; });
   var target = cfgOf(slug).reps, n0 = ls[ls.length - 1].stufe;
   var clean = ls.filter(function (l) { return l.reps >= target; });
-  /* RIR-Trend statt Momentaufnahme: die letzten bis zu drei Einheiten,
-     die jüngste doppelt gewichtet — ein schlechter Tag kippt so nichts. */
-  var sids = [], seenS = {};
-  for (var q = all.length - 1; q >= 0 && sids.length < 3; q--) {
-    var sq = sidOf(all[q]);
-    if (!seenS[sq]) { seenS[sq] = 1; sids.push(sq); }
-  }
-  var wsum = 0, wn = 0;
-  sids.forEach(function (sd, i) {
-    var wgt = i === 0 ? 2 : 1;
-    all.forEach(function (l) {
-      if (sidOf(l) !== sd || l.rir === undefined) return;
-      wsum += l.rir * wgt; wn += wgt;
-    });
-  });
-  var avgR = wn ? wsum / wn : null;
-  var rir0 = ls.filter(function (l) { return l.rir !== undefined; });
-  /* Progressive Überlastung: drei saubere Durchgänge auf Zielwiederholungen —
-     und keine Anzeichen, dass es gerade noch so ging. */
-  if (clean.length >= 3 && (avgR === null || avgR >= 1)) {
+  /* Progressive Überlastung: drei Durchgänge auf Zielwiederholungen. */
+  if (clean.length >= 3) {
     /* Schritt 1: Wiederholungen innerhalb des Fensters erhöhen. */
     if (target < repHi()) {
       var nz = Math.min(repHi(), target + repStep());
@@ -698,22 +808,23 @@ function suggestion(slug) {
     return { dir: 1, next: Math.min(12, n0 + 0.5), reps: repLo(), ziel: true,
       txt: 'Fenster ausgereizt (' + clean.length + '× ' + target + ' Wdh.) — Stufe ' + fmt(Math.min(12, n0 + 0.5)) + ' und zurück auf ' + repLo() + ' Wdh.' };
   }
-  var rows = rir0;
-  if (rows.length < 2) return null;
-  var lastSid = sidOf(rows[rows.length - 1]);
-  var s = rows.filter(function (l) { return sidOf(l) === lastSid; });
-  if (s.length < 2) return null;
-  var avg = s.reduce(function (a, l) { return a + l.rir; }, 0) / s.length;
-  var n = s[s.length - 1].stufe;
-  if (isEigen(BY[slug])) {
-    var tot = s.reduce(function (a, l) { return a + l.reps; }, 0);
-    if (avg >= 2) return { dir: 0, next: n, eigen: true, txt: 'Ø ' + fmt(Math.round(avg * 10) / 10) + ' Wdh. Reserve bei ' + tot + ' Wdh. — Eigengewichtsübung: mehr Wiederholungen oder langsamere Ausführung statt höherer Stufe.' };
-    if (avg < 0.5) return { dir: 0, next: n, eigen: true, txt: 'Kaum Reserve — Wiederholungen halten, ggf. Satzzahl reduzieren.' };
-    return { dir: 0, next: n, eigen: true, txt: 'Passende Belastung — ' + tot + ' Wdh. halten.' };
+  if (ls.length < 2) return null;
+  /* Bis zum Versagen trainiert: liegt die Leistung deutlich unter dem Ziel,
+     ist die Stufe zu hoch. Der letzte Durchgang zählt dabei am meisten. */
+  var tot = ls.reduce(function (a, l) { return a + l.reps; }, 0);
+  var best = Math.max.apply(null, ls.map(function (l) { return l.reps; }));
+  var eig = isEigen(BY[slug]);
+  if (best < repLo()) {
+    if (eig) return { dir: 0, next: n0, eigen: true,
+      txt: 'Nur ' + best + ' Wdh. im besten Durchgang — Eigengewichtsübung: leichtere Variante oder Teilwiederholungen.' };
+    return { dir: -1, next: Math.max(1, n0 - 0.5),
+      txt: 'Nur ' + best + ' Wdh. im besten Durchgang (Ziel ' + target + ') — Stufe ' + fmt(Math.max(1, n0 - 0.5)) + ' ist die passendere Last.' };
   }
-  if (avg >= 2) return { dir: 1, next: Math.min(12, n + 0.5), txt: 'Ø ' + fmt(Math.round(avg * 10) / 10) + ' Wdh. Reserve — Stufe ' + fmt(Math.min(12, n + 0.5)) + ' probieren.' };
-  if (avg < 0.5) return { dir: -1, next: Math.max(1, n - 0.5), txt: 'Kaum Reserve — Stufe ' + fmt(n) + ' halten oder auf ' + fmt(Math.max(1, n - 0.5)) + ' zurück.' };
-  return { dir: 0, next: n, txt: 'Passende Belastung — Stufe ' + fmt(n) + ' halten.' };
+  if (eig) return { dir: 0, next: n0, eigen: true,
+    txt: tot + ' Wdh. im Satz, bester Durchgang ' + best + ' — noch ' + (3 - clean.length) + '× ' + target + ' Wdh. bis zum nächsten Schritt.' };
+  return { dir: 0, next: n0,
+    txt: 'Bester Durchgang ' + best + ' Wdh. bei Ziel ' + target + ' — Stufe ' + fmt(n0) + ' halten, noch ' +
+      Math.max(1, 3 - clean.length) + '× ' + target + ' Wdh. bis zur nächsten Stufe.' };
 }
 /* Ein Knopf, der den Vorschlag genau so übernimmt, wie er formuliert ist. */
 function sugBtn(slug, sg) {
@@ -747,10 +858,38 @@ function stepper(slug, k, val, step, unit) {
 /* ---------- Modell ---------- */
 function cfg() { return KOLBEN[db.set.kolben]; }
 function mult() { return db.set.ds ? 2 : 1; }
-function setupLabel() { return (db.set.ds ? 'DS · 2× ' : 'S · 1× ') + cfg().label; }
-function kgStart(n) { return r2(mult() * cfg().f * (n + 1)); }
-function kgEnd(n) { var k = cfg(); return n < 8 ? kgStart(n) : r2(mult() * (k.f * (n + 1) + k.dm * (n - k.d0))); }
-function kgLabel(n) { var a = kgStart(n), b = kgEnd(n); return b > a ? fmt(a) + '–' + fmt(b) : fmt(a); }
+/* ---------- Kolben im Einsatz ----------
+   Das DS hat zwei Schienen, aber die meisten Übungen hängen nur an EINEM Horn
+   ("das Griffband durch die Hornschlaufe"). Dort zieht auch nur ein Kolben —
+   die Skala gilt dann einfach, nicht doppelt. Zwei Kolben ziehen, wenn die
+   Übung ausdrücklich beide Schlitten, beide Seilzüge oder beide Hörner nutzt;
+   die DS-eigenen Übungen (Präfix 2xx) tun das immer. */
+function pistonsDefault(e) {
+  if (e.ds) return 2;
+  var tx = e.tx || {};
+  var t = ((tx.v || '') + ' ' + (tx.a || '')).toLowerCase();
+  if (/beide (schlitten|seilzüge|hörner|griffbänder|karabiner)|beiden (schlitten|hörnern)|die schlitten|hörner|hand ein horn/.test(t)) return 2;
+  return 1;
+}
+function pistonsOf(e) {
+  var o = (db.pistOv || {})[e.slug];
+  return o ? +o : pistonsDefault(e);
+}
+function pistonsEigen(e) { return !!(db.pistOv || {})[e.slug]; }
+/* Wirksamer Faktor: ohne DS immer einfach. */
+function multOf(slug) {
+  if (!db.set.ds) return 1;
+  var e = BY[slug];
+  return e ? pistonsOf(e) : 2;
+}
+function setupLabel(slug) {
+  var m = slug === undefined ? mult() : multOf(slug);
+  return (m === 2 ? 'DS · 2× ' : 'S · 1× ') + cfg().label;
+}
+function kgStart(n, slug) { return r2((slug === undefined ? mult() : multOf(slug)) * cfg().f * (n + 1)); }
+function kgEnd(n, slug) { var k = cfg(), m = slug === undefined ? mult() : multOf(slug);
+  return n < 8 ? kgStart(n, slug) : r2(m * (k.f * (n + 1) + k.dm * (n - k.d0))); }
+function kgLabel(n, slug) { var a = kgStart(n, slug), b = kgEnd(n, slug); return b > a ? fmt(a) + '–' + fmt(b) : fmt(a); }
 function r2(x) { return Math.round(x * 100) / 100; }
 function fmt(n) { return String(n).replace('.', ','); }
 /* Ohne eigenen Verlauf gilt die Schätzung aus dem Profil — sonst startet ein
@@ -990,7 +1129,7 @@ function delOneSet(id, slug, t) {
 
 /* ---------- Laufzeit-Zustand ---------- */
 var st = { tab: 'heute', detail: null, q: '', chip: 'Alle', chipR: 'Alle',
-           wo: null, rest: 0, restTotal: 75, elapsed: 0, toast: null, editR: false, open: {}, restSolo: null, range: 'woche', session: null, ask: null, solo: {}, summary: null, rir: 2, warm: false, dtab: 'log', mix: 0, pname: '' };
+           wo: null, rest: 0, restTotal: 75, elapsed: 0, toast: null, editR: false, open: {}, restSolo: null, range: 'woche', session: null, ask: null, solo: {}, summary: null, warm: false, dtab: 'log', mix: 0, pname: '' };
 
 function planIds() {
   var r = db.set.ruest, f = curFocus();
@@ -1074,7 +1213,7 @@ function warmPlan(slug) {
   if (b >= n) b = Math.max(1, n - 0.5);
   if (a >= b) a = Math.max(1, b - 0.5);
   return { a: a, b: b, n: n,
-    txt: 'Stufe ' + fmt(a) + ' (' + kgLabel(a) + ' kg) und Stufe ' + fmt(b) + ' (' + kgLabel(b) + ' kg), je 6–8 Wdh. — dann Stufe ' + fmt(n) + '.' };
+    txt: 'Stufe ' + fmt(a) + ' (' + kgLabel(a, slug) + ' kg) und Stufe ' + fmt(b) + ' (' + kgLabel(b, slug) + ' kg), je 6–8 Wdh. — dann Stufe ' + fmt(n) + '.' };
 }
 function warmBox(slug) {
   var w = warmPlan(slug); if (!w) return '';
@@ -1276,7 +1415,7 @@ function restOverlay(slug) {
       return '<div class="restinfo">Durchgang gespeichert · ' + (dn.length ? plural(dn.length, 'Durchgang', 'Durchgänge') + ' im offenen Satz' : 'Satz läuft') + '</div>';
     })() +
     (e ? '<div class="next"><i>' + (st.restSolo ? 'Übung' : 'Als Nächstes') + '</i><b>' + esc(e.name) + '</b>' +
-      '<u>' + (isEigen(e) ? 'Eigengewicht' : 'Stufe ' + fmt(stufeOf(slug)) + ' · ' + kgLabel(stufeOf(slug)) + ' kg') + ' · ' +
+      '<u>' + (isEigen(e) ? 'Eigengewicht' : 'Stufe ' + fmt(stufeOf(slug)) + ' · ' + kgLabel(stufeOf(slug), slug) + ' kg') + ' · ' +
       repVal(slug) + ' Wdh.</u></div>' : '') +
     '<div class="rbtns"><div class="ghost" data-a="rest+">+30 s</div><div class="cta" data-a="rest0">Pause beenden</div></div>' +
     '<span class="sheethint flow">Nach unten wischen beendet die Pause</span>' +
@@ -1352,7 +1491,7 @@ function vHeute() {
     var e = BY[slug], n = stufeOf(slug);
     h += '<div class="prow" data-a="open:' + slug + '"><span class="num">' + ('0' + (i + 1)).slice(-2) + '</span>' +
       '<span class="pname">' + esc(e.name) + '</span><span class="pload">' +
-      (isEigen(e) ? 'Eigengewicht' : 'St. ' + fmt(n) + ' · ' + kgLabel(n) + ' kg') + '</span></div>';
+      (isEigen(e) ? 'Eigengewicht' : 'St. ' + fmt(n) + ' · ' + kgLabel(n, slug) + ' kg') + '</span></div>';
   });
   h += '</div><div class="ghost thin" data-a="mix">Andere Übungen vorschlagen</div>' +
     '<div class="cta" data-a="start">Training starten <b>→</b></div></div>';
@@ -1364,7 +1503,7 @@ function vHeute() {
       var hh = histOf(e.slug), d = hh[hh.length - 1].stufe - hh[0].stufe;
       h += '<div class="gcard" data-a="open:' + e.slug + '"><div class="gname">' + esc(e.name) + '</div>' +
         '<div class="grow"><b>' + fmt(hh[hh.length - 1].stufe) + '</b><i>Stufe</i><u>' + (d >= 0 ? '+' : '') + fmt(d) + '</u></div>' +
-        '<div class="gkg">' + kgLabel(hh[hh.length - 1].stufe) + ' kg</div></div>';
+        '<div class="gkg">' + kgLabel(hh[hh.length - 1].stufe, e.slug) + ' kg</div></div>';
     });
     h += '</div>';
   }
@@ -1408,7 +1547,7 @@ function vKatalog() {
       '<div class="ebody"><div class="ename">' + esc(e.name) + (e.ds ? ' <span class="dsflag">DS</span>' : '') + '</div>' +
       '<div class="emeta">' + e.m + ' · ' + RLABEL[ruestOfEx(e)] + '</div>' +
       '<div class="mset">' + skalaOf(e).slice(0, 4).map(function (r) { return '<span style="width:' + (6 + 6 * (r[1] || 4)) + 'px"></span>'; }).join('') + '</div></div>' +
-      '<div class="eright">' + (isEigen(e) ? '<b>Eigen</b><i>Körpergewicht</i>' : '<b>' + kgLabel(n) + '</b><i>Stufe ' + fmt(n) + '</i>') + '</div></div>';
+      '<div class="eright">' + (isEigen(e) ? '<b>Eigen</b><i>Körpergewicht</i>' : '<b>' + kgLabel(n, e.slug) + '</b><i>Stufe ' + fmt(n) + '</i>') + '</div></div>';
   });
   return h + '</div>';
 }
@@ -1421,43 +1560,63 @@ function vDetail() {
     '<div class="back" data-a="back">←</div>' +
     '<div class="hmeta"><div class="hname">' + esc(ex.name) + '</div>' +
     '<div class="hsub">' + ex.m + ' · ' + RLABEL[ruestOfEx(ex)] + ' · ' +
-    (eig ? 'Eigengewicht — Last wird nicht gerechnet' : 'Stufe ' + fmt(n) + ' ≈ ' + kgLabel(n) + ' kg') + '</div></div></div>';
+    (eig ? 'Eigengewicht — Last wird nicht gerechnet' : 'Stufe ' + fmt(n) + ' ≈ ' + kgLabel(n, ex.slug) + ' kg') + '</div></div></div>';
 
   h += '<div class="dtabs">' +
     '<div class="dt' + (tab === 'log' ? ' on' : '') + '" data-a="dtab:log">Trainieren</div>' +
     '<div class="dt' + (tab === 'info' ? ' on' : '') + '" data-a="dtab:info">Anleitung</div></div>';
 
   if (tab === 'log') {
-    var ank = ankerOf(ex), hcm = hoeheOf(ex), hown = hoeheEigen(ex);
-    h += '<div class="block"><div class="blockhead"><span>Schlittenhöhe</span>' +
+    var ank = ankerOf(ex), sk = skalaEx(ex), hown = skalaEigen(ex);
+    h += '<div class="block"><div class="blockhead"><span>Skala am Horn</span>' +
       '<span class="mono">' + (hown ? 'von dir gesetzt' : ank.vage ? 'Schätzung' : ank.lbl) + '</span></div>' +
       '<div class="hrow"><div class="sbtn" data-a="h-:' + ex.slug + '">−</div>' +
-      '<div class="hval"><b>' + hcm + '<em>cm</em></b><i>über Boden · ' + (hcm - MONT) + ' cm über der Hornmontage</i></div>' +
+      '<div class="hval"><b>' + sk + '<em>cm</em></b><i>' + (function () {
+        var hm = 'Hornmitte ' + hornHoehe(sk) + ' cm über Boden';
+        /* Nennt der Text eine Position an der Säule, ist der Schlitten das
+           Ziel — eine Griffhöhe daraus zu behaupten wäre geraten. */
+        if (ank.kind === 'rail') return hm;
+        var g = griffHoehe(ex, sk);
+        return g === null ? hm : 'Griff auf ' + g + ' cm · ' + hm;
+      })() + '</i></div>' +
       '<div class="sbtn" data-a="h+:' + ex.slug + '">+</div></div>' +
       '<div class="pad2"><p class="fine">' +
-      (ex.ds ? 'Beide Schlitten auf dieselbe Höhe. ' : '') +
-      'Gerechnet aus ' + (db.set.groesse || 175) + ' cm Körpergröße' +
-      (ank.kind === 'rail' ? ' und der Position an der Säule (' + ank.lbl + ')'
-        : ' · ' + ank.lbl + (poseOf(ex) === 'sitz' ? ' im Sitzen' : poseOf(ex) === 'lieg' ? ' im Liegen' : '')) +
-      '. In 5-cm-Schritten anpassbar, der Wert bleibt gespeichert.' +
-      (hcm === MONT ? ' Tiefer geht es nicht — das Horn ist 40 cm über dem Boden montiert.'
-        : hcm === MONT + SCHIENE ? ' Das ist das obere Ende der Schiene.' : '') + '</p>' +
-      (hown ? '<div class="ghost thin" data-a="hres:' + ex.slug + '">Auf ' + hoeheCalc(ex) + ' cm zurücksetzen</div>' : '') +
+      (ex.ds ? 'Beide Schlitten auf denselben Wert. ' : '') +
+      (ank.kind === 'rail'
+        ? 'Der Text nennt die Position an der Säule (' + ank.lbl + ') — das ist direkt der Skalenwert.'
+        : 'Ziel ist ' + ank.lbl + (poseOf(ex) === 'sitz' ? ' im Sitzen' : poseOf(ex) === 'lieg' ? ' im Liegen' : '') +
+          ' bei ' + (db.set.groesse || 175) + ' cm Körpergröße, also ' + Math.round(griffWunsch(ex)) + ' cm Griffhöhe. Abzüglich Versatz: ' + versatzTxt(ex) + '.') +
+      ' In 5-cm-Schritten anpassbar, der Wert bleibt gespeichert.' +
+      (sk === 0 ? ' Das ist das untere Ende der Skala.' : sk === SKALA_MAX ? ' Das ist das obere Ende der Skala.' : '') + '</p>' +
+      (hown ? '<div class="ghost thin" data-a="hres:' + ex.slug + '">Auf ' + skalaCalc(ex) + ' cm zurücksetzen</div>' : '') +
       '</div></div>';
 
     if (eig) {
       h += '<div class="lastbox wide note"><i>Eigengewichtsübung</i><b>Du arbeitest gegen den eigenen Körper — die Geräteeinstellung ist ein Anschlag, keine Last. Diese Sätze zählen als Arbeitssätze, aber mit 0 kg Volumen. Fortschritt läuft über Wiederholungen und Ausführung.</b></div>';
     } else {
       h += '<div class="block"><div class="blockhead"><span>Stufe → Kilogramm</span>' +
-        '<span class="mono">' + setupLabel() + '</span></div>' +
+        '<span class="mono">' + setupLabel(ex.slug) + '</span></div>' +
         '<div class="stepper"><div class="sbtn" data-a="st-:' + ex.slug + '">–</div>' +
-        '<div class="sval"><div><b>' + fmt(n) + '</b><i>Stufe</i></div><div class="skg">' + kgLabel(n) + ' kg</div></div>' +
+        '<div class="sval"><div><b>' + fmt(n) + '</b><i>Stufe</i></div><div class="skg">' + kgLabel(n, ex.slug) + ' kg</div></div>' +
         '<div class="sbtn" data-a="st+:' + ex.slug + '">+</div></div><div class="ladder">';
       STUFEN.forEach(function (sv) {
         h += '<div class="lb' + (sv <= n ? ' on' : '') + '" style="height:' + (34 * sv / 12) + 'px" data-a="stx:' + ex.slug + '|' + sv + '"></div>';
       });
-      h += '</div><div class="lrange"><span>1 · ' + fmt(kgStart(1)) + ' kg</span><span>' +
-        (n >= 8 ? 'ansteigende Kraftkurve' : 'konstante Last') + '</span><span>12 · ' + fmt(kgEnd(12)) + ' kg</span></div></div>';
+      h += '</div><div class="lrange"><span>1 · ' + fmt(kgStart(1, ex.slug)) + ' kg</span><span>' +
+        (n >= 8 ? 'ansteigende Kraftkurve' : 'konstante Last') + '</span><span>12 · ' + fmt(kgEnd(12, ex.slug)) + ' kg</span></div>';
+      if (db.set.ds) {
+        var pz = pistonsOf(ex);
+        h += '<div class="seg3 flat">' +
+          '<div class="s3' + (pz === 1 ? ' on' : '') + '" data-a="pist:' + ex.slug + '|1"><b>Ein Schlitten</b><i>' + fmt(kgStart(1, ex.slug) / pz) + '–' + fmt(r2(kgEnd(12, ex.slug) / pz)) + ' kg</i></div>' +
+          '<div class="s3' + (pz === 2 ? ' on' : '') + '" data-a="pist:' + ex.slug + '|2"><b>Beide Schlitten</b><i>doppelte Last</i></div></div>' +
+          '<div class="pad2"><p class="fine">' +
+          (pz === 1 ? 'Diese Übung hängt an einem Horn — es zieht ein Kolben, die Skala gilt einfach.'
+                    : 'Die Übung nutzt beide Hörner — beide Kolben ziehen, die Last verdoppelt sich.') +
+          (pistonsEigen(ex) ? ' Von dir gesetzt.' : '') + '</p>' +
+          (pistonsEigen(ex) ? '<div class="ghost thin" data-a="pistres:' + ex.slug + '">Auf ' + (pistonsDefault(ex) === 1 ? 'ein Schlitten' : 'beide Schlitten') + ' zurücksetzen</div>' : '') +
+          '</div>';
+      }
+      h += '</div>';
     }
 
     var pv = lastPerf(ex.slug);
@@ -1479,13 +1638,17 @@ function vDetail() {
     h += '<div class="pad">' + dgBlock(ex.slug) + '</div>';
     h += '<div class="pad"><div class="ghost" data-a="endex:' + ex.slug + '">Übung beenden · Satz abschließen</div></div>';
 
-    var rec = prOf(ex.slug);
+    var rec = prOf(ex.slug), bs = bestSatz(ex.slug);
+    /* Bei nur einem Durchgang ist der Satz derselbe Wert wie der Durchgang —
+       dann wäre die dritte Zelle eine Wiederholung. */
+    if (bs && bs.sets < 2) bs = null;
     if (rec && rec.eigen) {
       h += '<div class="prrow"><div class="prcell"><i>Meiste Wiederholungen</i><b>' + rec.rep.reps + '</b><u>Wdh. · ' + dstr(rec.rep.t) + '</u></div>' +
-        '<div class="prcell"><i>Belastung</i><b>Eigen</b><u>kein kg-Volumen</u></div></div>';
+        (bs ? '<div class="prcell"><i>Stärkster Satz</i><b>' + bs.reps + '</b><u>Wdh. in ' + bs.sets + ' DG · ' + dstr(bs.t) + '</u></div>' : '') + '</div>';
     } else if (rec) {
-      h += '<div class="prrow"><div class="prcell"><i>Schwerste Stufe</i><b>' + fmt(rec.load.stufe) + '</b><u>' + rec.load.reps + ' Wdh. · ' + dstr(rec.load.t) + '</u></div>' +
-        '<div class="prcell"><i>Bestes Volumen</i><b>' + Math.round(rec.vol.vol).toLocaleString('de-DE') + '</b><u>kg · ' + dstr(rec.vol.t) + '</u></div></div>';
+      h += '<div class="prrow' + (bs ? ' tri' : '') + '"><div class="prcell"><i>Schwerste Stufe</i><b>' + fmt(rec.load.stufe) + '</b><u>' + rec.load.reps + ' Wdh. · ' + dstr(rec.load.t) + '</u></div>' +
+        '<div class="prcell"><i>Stärkster Durchgang</i><b>' + Math.round(rec.vol.vol).toLocaleString('de-DE') + '</b><u>kg · ' + dstr(rec.vol.t) + '</u></div>' +
+        (bs ? '<div class="prcell"><i>Stärkster Satz</i><b>' + Math.round(bs.vol).toLocaleString('de-DE') + '</b><u>kg in ' + bs.sets + ' DG · ' + dstr(bs.t) + '</u></div>' : '') + '</div>';
     }
     h += '<div class="spacer"></div>';
   } else {
@@ -1648,6 +1811,11 @@ function vRechner() {
     rail('EISENHORN DS', '2 Schienen · 2 Kolben', db.set.ds, 'ds:1') + '</div><div class="kols">' +
     KOLBEN.map(function (k, i) { return '<div class="kol' + (db.set.kolben === i ? ' on' : '') + '" data-a="kol:' + i + '">' + k.label + '</div>'; }).join('') +
     '</div><div class="pad2"><div class="setupline"><span class="sq"></span>' + setupLabel() + '</div>' +
+    '<div class="rowb" style="margin-top:14px"><span>Hornstellung</span><b>' + HORNL[hornDir()].replace('Hornarm ', '') + '</b></div>' +
+    '<div class="rfilter tight">' + ['oben', 'waag', 'unten'].map(function (d) {
+      return '<div class="rc' + (hornDir() === d ? ' on' : '') + '" data-a="horn:' + d + '">' + HORNL[d].replace('Hornarm ', '') + '</div>';
+    }).join('') + '</div>' +
+    '<p class="fine">Wohin der Hornarm zeigt, verschiebt den Griff um ' + HORNARM + ' cm gegenüber der Hornmitte. Die Skala am Horn läuft von 0 bis ' + SKALA_MAX + ' cm, 0 liegt ' + MONT + ' cm über dem Boden.</p>' +
     '<div class="rowb"><span>Körpergewicht · für kcal</span><b>' + db.set.bw + ' kg</b></div>' +
     '<input type="range" id="bw" min="20" max="140" value="' + db.set.bw + '">' +
     '<div class="rfilter tight">' + ['alle', 'nur', 'ohne'].map(function (m) {
@@ -1662,7 +1830,7 @@ function vRechner() {
       '<span class="c2"><i style="width:' + Math.round(100 * kgStart(n) / maxKg) + '%"></i></span>' +
       '<span class="c3' + (n >= 8 ? ' acc' : '') + '">' + kgLabel(n) + ' kg</span></div>';
   });
-  h += '</div><div class="pad"><p class="fine">Exakt aus den EISENHORN-Kraftstufendiagrammen (Werte pro Kolben). Das DS hat zwei Schienen und damit zwei Kolben — alle Werte verdoppelt.</p>' +
+  h += '</div><div class="pad"><p class="fine">Exakt aus den EISENHORN-Kraftstufendiagrammen (Werte pro Kolben). Das DS hat zwei Schienen und damit zwei Kolben — verdoppelt gilt das aber nur für Übungen, die wirklich beide Hörner nutzen. Hängt die Übung an einem Horn, zieht ein Kolben und die Tabelle gilt einfach; jede Übung zeigt ihren Fall im Detail.</p>' +
     '<div class="ghost" data-a="export">Daten sichern</div>' +
     '<label class="ghost" for="impf">Sicherung einlesen</label>' +
     '<input type="file" id="impf" accept="application/json,.json" style="display:none">' +
@@ -1701,7 +1869,7 @@ function vProfil() {
     '<input type="range" id="bw" min="20" max="140" value="' + s.bw + '">' +
     '<div class="rowb" style="margin-top:18px"><span>Körpergröße</span><b>' + (s.groesse || 175) + ' cm</b></div>' +
     '<input type="range" id="gr" min="100" max="210" value="' + (s.groesse || 175) + '">' +
-    '<p class="fine">Daraus rechnet jede Übung ihre Schlittenhöhe — der Wert steht im Übungsdetail und ist dort einzeln anpassbar.</p>' +
+    '<p class="fine">Daraus rechnet jede Übung ihren Skalenwert am Horn — er steht im Übungsdetail und ist dort einzeln anpassbar.</p>' +
     '<div class="rowb" style="margin-top:18px"><span>Alter</span><b>' + (s.alter || 35) + ' Jahre</b></div>' +
     '<input type="range" id="alter" min="6" max="80" value="' + (s.alter || 35) + '">' +
     '</div><div class="kols">' +
@@ -1763,7 +1931,7 @@ function vProfil() {
       '<div class="emeta">' + e.mk[0][0] + ' · ' + RLABEL[ruestOfEx(e)] + '</div></div>' +
       '<div class="eright">' + (done
         ? '<b class="mut">bereits trainiert</b>'
-        : v && v.stufe ? '<b>Stufe ' + fmt(v.stufe) + '</b><i>' + kgLabel(v.stufe) + ' kg</i>'
+        : v && v.stufe ? '<b>Stufe ' + fmt(v.stufe) + '</b><i>' + kgLabel(v.stufe, slug) + ' kg</i>'
         : v && v.fix ? '<b class="mut">feste Stufe</b>'
         : '<b class="mut">unter Stufe 1</b>') + '</div></div>';
   });
@@ -1797,6 +1965,10 @@ function vWorkout() {
   var rc = prOf(slug);
   if (rc) h += '<div class="lastbox pr"><i>Rekord · ' + (rc.eigen ? 'meiste Wiederholungen' : 'schwerste Stufe') + '</i><b>' +
     prLine(rc.eigen ? rc.rep : rc.load, rc.eigen) + '</b></div>';
+  var bs0 = bestSatz(slug);
+  if (bs0 && bs0.sets > 1) h += '<div class="lastbox pr"><i>Rekord · stärkster Satz</i><b>' +
+    (bs0.eigen ? bs0.reps + ' Wdh.' : Math.round(bs0.vol).toLocaleString('de-DE') + ' kg') +
+    ' · ' + plural(bs0.sets, 'Durchgang', 'Durchgänge') + ' · ' + dstr(bs0.t) + '</b></div>';
   var sg2 = suggestion(slug);
   if (sg2) h += '<div class="lastbox sug"><i>Vorschlag</i><b>' + esc(sg2.txt) + '</b></div>';
 
@@ -1804,7 +1976,7 @@ function vWorkout() {
     ? '<div class="dcell ctr"><i>Belastung</i><div class="mini"><b>Eigen</b></div><u>Gewicht wird nicht gerechnet</u></div>'
     : '<div class="dcell ctr"><i>Stufe</i>' +
       '<div class="mini"><div class="sbtn sm" data-a="st-:' + slug + '">–</div><b>' + fmt(n) + '</b><div class="sbtn sm" data-a="st+:' + slug + '">+</div></div>' +
-      '<u>' + kgLabel(n) + ' kg</u></div>') +
+      '<u>' + kgLabel(n, slug) + ' kg</u></div>') +
     '<div class="dcell ctr"><i>Pause danach</i><div class="mini">' +
     '<div class="sbtn sm" data-a="cfg:' + slug + '|rest|-15">–</div><b>' + mmss(c.rest) + '</b>' +
     '<div class="sbtn sm" data-a="cfg:' + slug + '|rest|15">+</div></div>' +
@@ -1816,7 +1988,7 @@ function vWorkout() {
     if (!s.warm) hd++;
     h += '<div class="set ok' + (s.warm ? ' warm' : '') + '"><span class="mono">' + (s.warm ? 'AUFW.' : 'DG ' + hd) + '</span>' +
       '<b>' + s.reps + ' Wdh.<u>' + (isEigen(e) ? 'Eigengewicht' : 'St. ' + fmt(s.stufe)) +
-      (s.rir !== undefined ? ' · RIR ' + s.rir : '') + '</u></b>' +
+      '</u></b>' + recChips(s.rec) +
       '<span class="tagr" data-a="undoset">↺</span></div>';
   });
   h += '</div>';
@@ -1869,7 +2041,7 @@ function render() {
       if (!e || !rows.length) return;
       rows.forEach(function (r) {
         if (r.warm) return;
-        var v = kgStart(r.stufe) * r.reps;
+        var v = kgStart(r.stufe, l.slug) * r.reps;
         if (e.mk) e.mk.forEach(function (x) {
           mus[groupOf(x[0])] = (mus[groupOf(x[0])] || 0) + v * (x[1] || 4) / 4;
           mload[x[0]] = (mload[x[0]] || 0) + (x[1] || 4) / 4;
@@ -1969,7 +2141,7 @@ var A11Y = {
   swapex: 'Übung tauschen', endex: 'Satz abschließen', warm: 'Aufwärm-Durchgang umschalten',
   'rest+': 'Pause um 30 Sekunden verlängern', rest0: 'Pause beenden', restnow: 'Pause starten',
   'st+': 'Stufe erhöhen', 'st-': 'Stufe verringern', stx: 'Stufe wählen',
-  rp: 'Wiederholungen ändern', rir: 'Reserve wählen', prog: 'Vorschlag übernehmen',
+  rp: 'Wiederholungen ändern', prog: 'Vorschlag übernehmen',
   warmset: 'Aufwärmen starten', dgdel: 'Durchgang zurücknehmen', undoset: 'Letzten Durchgang zurücknehmen',
   focus: 'Fokus wählen', dsm: 'Gerätefilter', ruest: 'Rüstart wählen', kol: 'Kolben wählen',
   start: 'Training starten', del: 'Löschen', delex: 'Übung löschen', delsess: 'Einheit löschen',
@@ -2142,9 +2314,12 @@ app.addEventListener('click', function (ev) {
   }
   else if (a === 'editr') st.editR = !st.editR;
   else if (a === 'setr') { db.ruestOv[two[0]] = two[1]; st.editR = false; save(); }
-  else if (a === 'h+') { setHoehe(arg, hoeheOf(BY[arg]) + 5); }
-  else if (a === 'h-') { setHoehe(arg, hoeheOf(BY[arg]) - 5); }
-  else if (a === 'hres') { setHoehe(arg, null); toast('Zurück auf den gerechneten Wert'); }
+  else if (a === 'h+') { setSkala(arg, skalaEx(BY[arg]) + 5); }
+  else if (a === 'h-') { setSkala(arg, skalaEx(BY[arg]) - 5); }
+  else if (a === 'hres') { setSkala(arg, null); toast('Zurück auf den gerechneten Wert'); }
+  else if (a === 'horn') { db.set.horn = arg; save(); }
+  else if (a === 'pist') { db.pistOv = db.pistOv || {}; db.pistOv[two[0]] = two[1]; save(); }
+  else if (a === 'pistres') { db.pistOv = db.pistOv || {}; delete db.pistOv[arg]; save(); toast('Zurück auf die Vorgabe'); }
   else if (a === 'eigen') { setEigen(arg, !isEigen(BY[arg])); toast(isEigen(BY[arg]) ? 'Gewicht wird nicht gerechnet' : 'Stufe zählt wieder als Last'); }
   else if (a === 'logone') {
     var rv0 = repVal(arg), warmed = st.warm;
@@ -2160,8 +2335,10 @@ app.addEventListener('click', function (ev) {
   else if (a === 'endex') {
     var dgh = dgRows(arg).filter(function (x) { return !x.warm; });
     st.rest = 0; st.restSolo = null;
-    toast(dgh.length ? 'Satz beendet · ' + plural(dgh.length, 'Durchgang', 'Durchgänge') + ' · ' + dgSum(dgh) + ' Wdh.'
-                     : 'Kein Durchgang gespeichert');
+    var sr = dgh.length ? satzRec(arg, sidOf(dgh[0])) : null;
+    toast(!dgh.length ? 'Kein Durchgang gespeichert'
+      : sr ? RECL.satz + ' · ' + sr
+      : 'Satz beendet · ' + plural(dgh.length, 'Durchgang', 'Durchgänge') + ' · ' + dgSum(dgh) + ' Wdh.');
   }
   else if (a === 'dgdel') {
     var pd = arg.split('~');
@@ -2173,7 +2350,6 @@ app.addEventListener('click', function (ev) {
   else if (a === 'cfg') { setCfg(two[0], two[1], cfgOf(two[0])[two[1]] + (+two[2])); }
   else if (a === 'restnow') { st.rest = cfgOf(arg).rest; st.restTotal = st.rest; st.restSolo = arg; }
   else if (a === 'rp') setRep(two[0], repVal(two[0]) + (+two[1]));
-  else if (a === 'rir') { st.rir = +arg; st.warm = false; }
   else if (a === 'warm') st.warm = !st.warm;
   /* Aufwärmen starten: Stufe absenken, Durchgang als Aufwärmen markieren,
      Wiederholungen auf 6–8 setzen. Nach dem Speichern greift wieder die
@@ -2272,9 +2448,9 @@ function restoreWarm(slug) {
   }
 }
 function logSet(slug, stufe, reps, sid, rl) {
-  var r = { slug: slug, stufe: stufe, reps: reps, kg: kgStart(stufe), t: Date.now(), sid: sid || null };
+  var r = { slug: slug, stufe: stufe, reps: reps, kg: kgStart(stufe, slug), t: Date.now(), sid: sid || null };
   if (rl) r.rl = rl;
-  if (st.warm) r.warm = 1; else r.rir = st.rir;
+  if (st.warm) r.warm = 1;
   db.log.push(r);
   db.stufen[slug] = stufe; save();
 }
@@ -2288,13 +2464,12 @@ function startWo() {
 function logCurrent() {
   var w = st.wo, slug = w.ids[w.idx], n = stufeOf(slug), total = repVal(slug);
   var cur = w.done[w.idx] || (w.done[w.idx] = []);
-  cur.push({ stufe: n, reps: total, rl: [total], warm: st.warm ? 1 : 0, rir: st.warm ? undefined : st.rir });
-  if (!st.warm && !isEigen(BY[slug])) w.vol += kgStart(n) * total;
+  if (!st.warm && !isEigen(BY[slug])) w.vol += kgStart(n, slug) * total;
   logSet(slug, n, total, w.sid, [total]);
-  if (!st.warm && !isEigen(BY[slug])) {
-    var pr = prOf(slug, db.log[db.log.length - 1].t);
-    if (!pr || kgStart(n) * total > pr.vol.vol) toast('Neuer Rekord · ' + Math.round(kgStart(n) * total).toLocaleString('de-DE') + ' kg');
-  }
+  var justLogged = db.log[db.log.length - 1];
+  var recs = st.warm ? [] : recsOf(slug, justLogged);
+  cur.push({ stufe: n, reps: total, rl: [total], warm: st.warm ? 1 : 0, t: justLogged.t, rec: recs });
+  if (recs.length) toast(RECL[recs[0]] + (recs.length > 1 ? ' (+' + (recs.length - 1) + ')' : ''));
   var wasWarm = cur[cur.length - 1].warm;
   st.warm = false;
   if (wasWarm) restoreWarm(slug);
@@ -2316,7 +2491,7 @@ function undoSet() {
   var w = st.wo, cur = w.done[w.idx];
   if (!cur || !cur.length) return;
   var s = cur.pop();
-  w.vol -= kgStart(s.stufe) * s.reps;
+  w.vol -= kgStart(s.stufe, w.ids[w.idx]) * s.reps;
   for (var i = db.log.length - 1; i >= 0; i--) {
     if (db.log[i].sid === w.sid && db.log[i].slug === w.ids[w.idx]) { db.log.splice(i, 1); break; }
   }
@@ -2388,7 +2563,7 @@ function doExport() {
     /* Rohdaten für das Wiedereinlesen — die Felder oben sind für Health
        umbenannt und taugen nicht als Sicherung. */
     ver: db.ver || 4, sessionsRaw: db.sessions, cfg: db.cfg, notes: db.notes,
-    ruestOv: db.ruestOv, eigenOv: db.eigenOv, richtOv: db.richtOv, hoeheOv: db.hoeheOv, snotes: db.snotes, set: db.set };
+    ruestOv: db.ruestOv, eigenOv: db.eigenOv, richtOv: db.richtOv, skalaOv: db.skalaOv, pistOv: db.pistOv, snotes: db.snotes, set: db.set };
   var blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2417,7 +2592,7 @@ function doImport(file) {
       if (x && x.t && !st0[x.t] && x.sec !== undefined) { st0[x.t] = 1; db.sessions.push(x); }
     });
     db.sessions.sort(function (a, b) { return a.t - b.t; });
-    ['stufen', 'cfg', 'notes', 'ruestOv', 'eigenOv', 'richtOv', 'hoeheOv', 'snotes'].forEach(function (k) {
+    ['stufen', 'cfg', 'notes', 'ruestOv', 'eigenOv', 'richtOv', 'skalaOv', 'pistOv', 'snotes'].forEach(function (k) {
       var src = p[k]; if (!src) return;
       db[k] = db[k] || {};
       for (var q in src) if (db[k][q] === undefined) db[k][q] = src[q];
